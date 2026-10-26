@@ -2,7 +2,7 @@
 
 All notable changes are documented here. Versions use SemVer.
 
-## Unreleased — 0.1.0 acceptance candidate
+## 0.1.0 — 2026-10-26
 
 ### Added
 - Mobile-friendly server-rendered shipment lists and event detail; Active, Archive and Trash.
@@ -20,4 +20,4 @@ All notable changes are documented here. Versions use SemVer.
 ### Notes
 - Initial household application, not multi-tenant.
 - Old 100-free-trackings/month assumptions are intentionally not encoded; current provider quota is authoritative.
-- Release publication and execution evidence are required before this section is marked released.
+- Container image: `linux/amd64` and `linux/arm64`, non-root, pinned base and dependencies.

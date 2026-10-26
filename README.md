@@ -2,7 +2,7 @@
 
 Self-hosted parcel tracking for your own deliveries. A small, mobile-friendly web app with OpenID Connect login, a REST API for agents and automation, and signed outbound notifications.
 
-**Status:** v0.1.0 is under acceptance testing. Do not treat the implementation plan as release evidence.
+**Status:** v0.1.0, initial release. Single-household, not multi-tenant; see [SECURITY.md](SECURITY.md) for limits.
 
 - **Private by design:** no local passwords, no registration, OIDC-only browser access.
 - **Bring your tracking provider:** a replaceable adapter, initially [17TRACK API v2.2](https://api.17track.net/en/doc).
