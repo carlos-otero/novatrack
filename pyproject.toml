@@ -1,6 +1,6 @@
 [project]
 name = "novatrack"
-version = "0.1.0"
+version = "0.1.1"
 description = "Self-hosted personal parcel tracking with OIDC, 17TRACK and signed notifications"
 requires-python = ">=3.13,<3.14"
 license = "MIT"

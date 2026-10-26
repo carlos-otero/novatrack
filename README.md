@@ -2,7 +2,7 @@
 
 Self-hosted parcel tracking for your own deliveries. A small, mobile-friendly web app with OpenID Connect login, a REST API for agents and automation, and signed outbound notifications.
 
-**Status:** v0.1.0, initial release. Single-household, not multi-tenant; see [SECURITY.md](SECURITY.md) for limits.
+**Status:** v0.1.1. Single-household, not multi-tenant; see [SECURITY.md](SECURITY.md) for limits.
 
 - **Private by design:** no local passwords, no registration, OIDC-only browser access.
 - **Bring your tracking provider:** a replaceable adapter, initially [17TRACK API v2.2](https://api.17track.net/en/doc).
@@ -11,6 +11,23 @@ Self-hosted parcel tracking for your own deliveries. A small, mobile-friendly we
 - **Notifications:** generic HTTPS webhooks with HMAC signatures, a delivery audit and exponential retries. Telegram is optional and off by default.
 - **Automation:** multiple revocable, hashed API keys; authenticated OpenAPI schema.
 - **Portable containers:** ARM64 and AMD64; non-root, read-only filesystem supported.
+
+## Screenshots
+
+### Sign in
+
+![NovaTrack sign-in screen with the SSO button](docs/screenshots/login.png)
+
+### Shipments
+
+![Active shipments page showing the empty state](docs/screenshots/shipments.png)
+
+### Add a shipment
+
+![Track New Shipment dialog with optional carrier, label, store and notes](docs/screenshots/add-shipment.png)
+
+The shipment form image is cropped to the dialog; it does not show its position
+within the page. Desktop dialogs are centered; on mobile they open at the bottom.
 
 ## What it tracks
 

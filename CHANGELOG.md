@@ -2,6 +2,19 @@
 
 All notable changes are documented here. Versions use SemVer.
 
+## 0.1.1 — 2026-10-26
+
+### Fixed
+- Center the Track New Shipment dialog on desktop despite the global margin reset.
+- Keep the mobile dialog anchored to the bottom by clearing the browser's default top inset.
+- Add regression checks for dialog styles and shared modal classes.
+
+### Documentation
+- Add sign-in, shipment list and cropped shipment form screenshots to the README.
+
+### Upgrade notes
+- No database schema changes or new Alembic migrations. The schema remains at revision `0001`.
+
 ## 0.1.0 — 2026-10-26
 
 ### Added
