@@ -12,6 +12,7 @@ one does not abort the others:
   3. Quota check           (at most once per 24 h)
   4. Deliver due notifications
 """
+
 from __future__ import annotations
 
 import logging
@@ -38,6 +39,7 @@ def tick(session_factory, settings, provider) -> None:
     try:
         with session_factory.begin() as session:
             from novatrack import tracking  # noqa: PLC0415  (lazy, avoids circular import)
+
             tracking.process_operations(session, provider)
     except Exception as exc:
         logger.error("process_operations failed: %s", type(exc).__name__)
@@ -46,6 +48,7 @@ def tick(session_factory, settings, provider) -> None:
     try:
         with session_factory.begin() as session:
             from novatrack import tracking  # noqa: PLC0415
+
             tracking.housekeeping(session, provider)
     except Exception as exc:
         logger.error("Housekeeping failed: %s", type(exc).__name__)
@@ -54,6 +57,7 @@ def tick(session_factory, settings, provider) -> None:
     try:
         with session_factory.begin() as session:
             from novatrack.notifications import check_quota  # noqa: PLC0415
+
             now = datetime.now(UTC)
             app_settings = session.get(AppSettings, 1)
             due = (
@@ -71,6 +75,7 @@ def tick(session_factory, settings, provider) -> None:
     try:
         with session_factory.begin() as session:
             from novatrack.notifications import deliver_due  # noqa: PLC0415
+
             deliver_due(session, settings)
     except Exception as exc:
         logger.error("Delivery failed: %s", type(exc).__name__)

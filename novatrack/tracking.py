@@ -5,6 +5,7 @@ novatrack/providers/.  Notification delivery is in novatrack/notifications.py
 (notifications lane).  Web/auth routes own app.py.  No other modules are
 written or imported beyond the project's own packages.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -17,6 +18,7 @@ from sqlalchemy import case, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from novatrack.carriers import build_param_string, unsupported_required_params
 from novatrack.models import (
     AppSettings,
     ProviderOperation,
@@ -49,7 +51,12 @@ _OP_PRIORITY = case(
     else_=3,
 )
 
-# Max exponential backoff (caps at 1 h)
+# Sentinel value used as next_attempt_at when a register op is paused indefinitely
+# because the provider rejected it for missing/invalid additional parameters.
+# The worker will never pick up the op again until update_shipment_params() resets
+# next_attempt_at to now.  Using a far-future datetime avoids needing an extra DB
+# column while still making the "paused until user acts" semantics explicit.
+_PAUSED_INDEFINITELY = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
 _BACKOFF_BASE_SECS = 30
 _BACKOFF_CAP_SECS = 3600
 _BACKOFF_MAX_EXPONENT = 20  # 2^20 >> cap, but avoids huge integer arithmetic
@@ -177,7 +184,7 @@ def _backoff_delay(attempts: int) -> int:
     Exponent is capped to avoid computing huge integers for high attempt counts.
     """
     exponent = min(max(attempts - 1, 0), _BACKOFF_MAX_EXPONENT)
-    return min(_BACKOFF_BASE_SECS * (2 ** exponent), _BACKOFF_CAP_SECS)
+    return min(_BACKOFF_BASE_SECS * (2**exponent), _BACKOFF_CAP_SECS)
 
 
 def _normalize_webhook_data(data) -> list:
@@ -198,6 +205,7 @@ def _normalize_webhook_data(data) -> list:
 # Public API
 # ─────────────────────────────────────────────────────────────
 
+
 def create_shipment(
     session: Session,
     provider,
@@ -207,6 +215,9 @@ def create_shipment(
     name: str = "",
     store: str = "",
     notes: str = "",
+    destination_country: str | None = None,
+    destination_postal_code: str | None = None,
+    phone_number_last_4: str | None = None,
 ) -> Shipment:
     """Create a Shipment and atomically queue a register ProviderOperation.
 
@@ -220,17 +231,13 @@ def create_shipment(
         raise ValueError("Tracking number must not be blank")
 
     if not _TRACKING_NUMBER_RE.match(number):
-        raise ValueError(
-            "Tracking number must be 5–50 alphanumeric characters or hyphens"
-        )
+        raise ValueError("Tracking number must be 5–50 alphanumeric characters or hyphens")
 
     if carrier is not None and (not isinstance(carrier, int) or carrier <= 0):
         raise ValueError(f"Carrier must be a positive integer, got {carrier!r}")
 
     # Duplicate check: explicit read gives a clear ValueError before DB constraint fires
-    existing = session.execute(
-        select(Shipment).where(Shipment.number == number)
-    ).scalar_one_or_none()
+    existing = session.execute(select(Shipment).where(Shipment.number == number)).scalar_one_or_none()
     if existing is not None:
         raise ValueError(f"A shipment with number {number!r} already exists")
 
@@ -242,6 +249,9 @@ def create_shipment(
         store=store,
         notes=notes,
         status="untrackable" if is_tba else "pending",
+        destination_country=destination_country or None,
+        destination_postal_code=destination_postal_code or None,
+        phone_number_last_4=phone_number_last_4 or None,
     )
     session.add(shipment)
 
@@ -327,10 +337,79 @@ def manual_deliver(session: Session, shipment: Shipment) -> None:
     _do_transition(session, shipment, "delivered", utcnow())
 
 
+def change_carrier_shipment(
+    session: Session,
+    shipment: Shipment,
+    provider,
+    new_carrier: int,
+) -> None:
+    """Change the carrier for a registered shipment via 17TRACK changecarrier.
+
+    Calls provider.changecarrier and updates shipment.carrier in DB on success.
+    Raises ValueError if the shipment is not yet registered (guard against
+    accidental calls on unregistered shipments).
+    Raises ProviderError on all provider rejections (including -18019801..-18019808).
+    The UI layer should warn the user that this costs one shipment quota.
+    Caller must commit.
+    """
+    if not shipment.registered:
+        raise ValueError("Shipment must be registered with the provider before changing carrier")
+    old_carrier = shipment.carrier
+    result = provider.changecarrier(
+        shipment.number,
+        carrier_new=new_carrier,
+        carrier_old=old_carrier,
+    )
+    # Use carrier returned by provider (may differ from requested)
+    confirmed_carrier = result.get("carrier") or new_carrier
+    shipment.carrier = confirmed_carrier
+    shipment.updated_at = utcnow()
+    session.flush()
+
+
+def update_shipment_params(
+    session: Session,
+    shipment: Shipment,
+    *,
+    destination_country: str | None = None,
+    destination_postal_code: str | None = None,
+    phone_number_last_4: str | None = None,
+) -> bool:
+    """Update the additional tracking parameters for a shipment.
+
+    Updates the three stored param fields and, if there is a pending register
+    operation that was paused for missing params, resets its ``next_attempt_at``
+    to now so the worker picks it up on the next tick.
+
+    Returns True if a pending register op was reset (i.e. an immediate retry
+    was triggered), False otherwise.
+
+    Caller must commit.
+    """
+    shipment.destination_country = destination_country
+    shipment.destination_postal_code = destination_postal_code
+    shipment.phone_number_last_4 = phone_number_last_4
+    shipment.updated_at = utcnow()
+    session.flush()
+
+    # Reset any pending (paused) register op so the worker retries immediately.
+    pending_reg = session.execute(
+        select(ProviderOperation).where(
+            ProviderOperation.shipment_id == shipment.id,
+            ProviderOperation.kind == "register",
+            ProviderOperation.done == False,  # noqa: E712
+        )
+    ).scalar_one_or_none()
+    if pending_reg is not None:
+        pending_reg.next_attempt_at = utcnow()
+        shipment.provider_error = None  # clear stale error shown in UI
+        session.flush()
+        return True
+    return False
+
+
 def apply_snapshot(session: Session, shipment: Shipment, item: dict) -> bool:
     """Apply a gettrackinfo accepted-item dict (v2.2 track_info shape) to the shipment.
-
-    - Persists all provider events with fingerprint deduplication.
     - Updates ETA from time_metrics.estimated_delivery_date (only when not stale).
     - Uses *latest event time* (not API sync time) as the monotonic cursor
       (last_snapshot_at).  A snapshot whose latest event is older than the
@@ -388,11 +467,7 @@ def apply_snapshot(session: Session, shipment: Shipment, item: dict) -> bool:
         # Events have no timestamps but we already have a cursor → don't regress
         (max_event_time is None and last_snap is not None)
         # Events are older than (or equal to) current cursor
-        or (
-            max_event_time is not None
-            and last_snap is not None
-            and max_event_time <= last_snap
-        )
+        or (max_event_time is not None and last_snap is not None and max_event_time <= last_snap)
     )
 
     # Always persist events (fingerprint dedup is idempotent)
@@ -497,9 +572,7 @@ def apply_webhook(session: Session, payload: dict, raw_digest: str) -> int:
     updated = 0
     for item in items:
         if not isinstance(item, dict):
-            raise ValueError(
-                f"webhook data item must be a dict, got {type(item).__name__!r}"
-            )
+            raise ValueError(f"webhook data item must be a dict, got {type(item).__name__!r}")
         number = item.get("number")
         if not number:
             continue
@@ -509,9 +582,7 @@ def apply_webhook(session: Session, payload: dict, raw_digest: str) -> int:
         # shipments whose carrier is NULL (auto-detect, will be filled below).
         stmt = select(Shipment).where(Shipment.number == number)
         if carrier is not None:
-            stmt = stmt.where(
-                or_(Shipment.carrier == carrier, Shipment.carrier.is_(None))
-            )
+            stmt = stmt.where(or_(Shipment.carrier == carrier, Shipment.carrier.is_(None)))
 
         shipment = session.execute(stmt).scalar_one_or_none()
         if shipment is None:
@@ -554,14 +625,18 @@ def process_operations(session: Session, provider, limit: int = 20) -> int:
     """
     now = utcnow()
 
-    rows = session.execute(
-        select(ProviderOperation)
-        .where(ProviderOperation.done == False)  # noqa: E712
-        .where(ProviderOperation.next_attempt_at <= now)
-        .with_for_update(skip_locked=True)
-        .order_by(_OP_PRIORITY, ProviderOperation.next_attempt_at)
-        .limit(limit)
-    ).scalars().all()
+    rows = (
+        session.execute(
+            select(ProviderOperation)
+            .where(ProviderOperation.done == False)  # noqa: E712
+            .where(ProviderOperation.next_attempt_at <= now)
+            .with_for_update(skip_locked=True)
+            .order_by(_OP_PRIORITY, ProviderOperation.next_attempt_at)
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
 
     succeeded = 0
     for op in rows:
@@ -574,7 +649,33 @@ def process_operations(session: Session, provider, limit: int = 20) -> int:
 
         try:
             if op.kind == "register":
-                result = provider.register(shipment.number, shipment.carrier)
+                # Build v2.2 param string from stored additional fields (if any)
+                param: str | None = None
+                if shipment.carrier is not None:
+                    # Detect unsupported required params BEFORE calling the provider.
+                    # Silently sending empty values would cause a -18010018 reject loop.
+                    unsupported = unsupported_required_params(shipment.carrier)
+                    if unsupported:
+                        error_msg = (
+                            f"Registration blocked: carrier {shipment.carrier} requires "
+                            f"parameter(s) that NovaTrack cannot supply: "
+                            f"{', '.join(unsupported)}. "
+                            "Update the carrier or contact support."
+                        )
+                        # Mark op done so the worker does not retry indefinitely.
+                        # The shipment stays unregistered with an actionable error.
+                        op.done = True
+                        shipment.provider_error = error_msg[:200]
+                        shipment.updated_at = utcnow()
+                        session.flush()
+                        continue
+                    param = build_param_string(
+                        shipment.carrier,
+                        destination_country=shipment.destination_country,
+                        destination_postal_code=shipment.destination_postal_code,
+                        phone_number_last_4=shipment.phone_number_last_4,
+                    )
+                result = provider.register(shipment.number, shipment.carrier, param=param)
                 # Persist detected/corrected carrier from provider response
                 detected = result.get("carrier")
                 if detected is not None:
@@ -627,7 +728,7 @@ def process_operations(session: Session, provider, limit: int = 20) -> int:
             succeeded += 1
 
         except ProviderError as exc:
-            _record_retry(op, shipment, str(exc), now)
+            _record_retry(op, shipment, str(exc), now, reset_immediately=exc.retryable_without_quota)
         except Exception:
             # Generic network failure — generic message, no upstream content
             _record_retry(op, shipment, "provider unavailable", now)
@@ -635,11 +736,27 @@ def process_operations(session: Session, provider, limit: int = 20) -> int:
     return succeeded
 
 
-def _record_retry(op: ProviderOperation, shipment: Shipment, error: str, now: datetime) -> None:
+def _record_retry(
+    op: ProviderOperation,
+    shipment: Shipment,
+    error: str,
+    now: datetime,
+    *,
+    reset_immediately: bool = False,
+) -> None:
     op.attempts += 1
     op.last_error = error[:200]
-    delay = _backoff_delay(op.attempts)
-    op.next_attempt_at = now + timedelta(seconds=delay)
+    if reset_immediately:
+        # Missing-param error: the op cannot make progress until the user adds
+        # the missing field(s).  Set next_attempt_at to _PAUSED_INDEFINITELY so
+        # the worker NEVER picks it up again.  The only way to resume is for the
+        # user to supply the missing fields via POST /shipments/{id}/params (UI
+        # or API), which calls update_shipment_params() and resets
+        # next_attempt_at to now.
+        op.next_attempt_at = _PAUSED_INDEFINITELY
+    else:
+        delay = _backoff_delay(op.attempts)
+        op.next_attempt_at = now + timedelta(seconds=delay)
     shipment.provider_error = error[:200]
     shipment.updated_at = utcnow()
     session = Session.object_session(op)
@@ -668,34 +785,46 @@ def housekeeping(session: Session, provider, now: datetime | None = None) -> Non
 
     # ── Auto-archive delivered ───────────────────────────────────────────
     archive_cutoff = now - timedelta(days=settings.archive_days)
-    for shipment in session.execute(
-        select(Shipment).where(
-            Shipment.status == "delivered",
-            Shipment.bucket == "active",
-            Shipment.delivered_at <= archive_cutoff,
+    for shipment in (
+        session.execute(
+            select(Shipment).where(
+                Shipment.status == "delivered",
+                Shipment.bucket == "active",
+                Shipment.delivered_at <= archive_cutoff,
+            )
         )
-    ).scalars().all():
+        .scalars()
+        .all()
+    ):
         archive_shipment(session, shipment, provider)
 
     # ── Purge old trash ──────────────────────────────────────────────────
     purge_cutoff = now - timedelta(days=settings.purge_days)
-    for shipment in session.execute(
-        select(Shipment).where(
-            Shipment.bucket == "trash",
-            Shipment.trashed_at <= purge_cutoff,
+    for shipment in (
+        session.execute(
+            select(Shipment).where(
+                Shipment.bucket == "trash",
+                Shipment.trashed_at <= purge_cutoff,
+            )
         )
-    ).scalars().all():
+        .scalars()
+        .all()
+    ):
         # Only purge if ALL remote operations have completed (done=True).
         # A pending register, stop, or delete means the remote resource may
         # still exist and must not be orphaned by a local delete.
-        pending_op = session.execute(
-            select(ProviderOperation)
-            .where(
-                ProviderOperation.shipment_id == shipment.id,
-                ProviderOperation.done == False,  # noqa: E712
+        pending_op = (
+            session.execute(
+                select(ProviderOperation)
+                .where(
+                    ProviderOperation.shipment_id == shipment.id,
+                    ProviderOperation.done == False,  # noqa: E712
+                )
+                .limit(1)
             )
-            .limit(1)
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if pending_op is not None:
             continue
         # CASCADE removes TrackingEvent, Transition, ProviderOperation.

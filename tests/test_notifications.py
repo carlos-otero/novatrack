@@ -19,6 +19,7 @@ Slices
 10. worker tick
 11. worker integration (real tracking + mock provider)
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -286,9 +287,7 @@ def test_enqueue_event_creates_deliveries_for_subscribed_enabled_channel(db_sess
     notif = enqueue_event(db_session, "s2:deliver:1", {"event": "status_changed"})
     assert notif is not None
 
-    deliveries = (
-        db_session.query(Delivery).filter_by(notification_id=notif.id, channel_id=ch.id).all()
-    )
+    deliveries = db_session.query(Delivery).filter_by(notification_id=notif.id, channel_id=ch.id).all()
     assert len(deliveries) == 1
     assert deliveries[0].state == "pending"
 
@@ -793,8 +792,8 @@ def test_deliver_due_outbound_failure_does_not_abort_other_channels(db_session, 
     d_ok = db_session.query(Delivery).filter_by(notification_id=notif.id, channel_id=ch_ok.id).one()
     d_bad = db_session.query(Delivery).filter_by(notification_id=notif.id, channel_id=ch_bad.id).one()
     states = {d_ok.state, d_bad.state}
-    assert "sent" in states        # one channel succeeded
-    assert "pending" in states     # the other is still retrying
+    assert "sent" in states  # one channel succeeded
+    assert "pending" in states  # the other is still retrying
 
 
 def test_deliver_due_does_not_log_webhook_secret(db_session, monkeypatch, caplog):
@@ -1071,9 +1070,7 @@ def test_check_quota_deduplicates_alert_same_month_and_total(db_session):
     check_quota(db_session, _MockProvider(quota), now=now2)
 
     period_key = "2026-11:100"
-    notifs = db_session.query(Notification).filter(
-        Notification.event_key == f"quota_low:{period_key}"
-    ).all()
+    notifs = db_session.query(Notification).filter(Notification.event_key == f"quota_low:{period_key}").all()
     assert len(notifs) == 1  # deduplicated
 
 
@@ -1165,7 +1162,9 @@ def test_worker_tick_delivers_pending_deliveries(db_session_factory, monkeypatch
 
     monkeypatch.setattr(_n, "deliver_due", _patched_deliver)
 
-    tick(db_session_factory, _settings(), _MockProvider({"quota_total": 0, "quota_used": 0, "quota_remain": 0}))
+    tick(
+        db_session_factory, _settings(), _MockProvider({"quota_total": 0, "quota_used": 0, "quota_remain": 0})
+    )
 
     with db_session_factory() as s:
         d = s.query(Delivery).filter_by(notification_id=notif.id).one()
@@ -1251,7 +1250,7 @@ def test_worker_integration_process_register_and_quota(db_session_factory):
     class _IntProvider:
         """Minimal provider that satisfies the full TrackingProvider protocol."""
 
-        def register(self, number, carrier=None):
+        def register(self, number, carrier=None, *, param=None):
             return {"number": number, "carrier": 42}  # detected carrier
 
         def stoptrack(self, number, carrier=None):
@@ -1272,9 +1271,7 @@ def test_worker_integration_process_register_and_quota(db_session_factory):
 
     with db_session_factory() as s:
         # register op must be done
-        op = s.query(ProviderOperation).filter_by(
-            shipment_id=ship_id, kind="register"
-        ).one()
+        op = s.query(ProviderOperation).filter_by(shipment_id=ship_id, kind="register").one()
         assert op.done is True
 
         # carrier detected from provider response must be persisted

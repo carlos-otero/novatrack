@@ -1,4 +1,5 @@
 """Environment-only runtime configuration; never load an implicit .env file."""
+
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -7,7 +8,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(case_sensitive=False, extra="ignore", env_ignore_empty=True, hide_input_in_errors=True)
+    model_config = SettingsConfigDict(
+        case_sensitive=False, extra="ignore", env_ignore_empty=True, hide_input_in_errors=True
+    )
     database_url: str
     oidc_issuer: str
     oidc_client_id: str
@@ -29,7 +32,14 @@ class Settings(BaseSettings):
     @classmethod
     def https_url(cls, value: str) -> str:
         parsed = urlsplit(value)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
             raise ValueError("A canonical HTTPS URL without credentials/query/fragment is required")
         return value.rstrip("/")
 

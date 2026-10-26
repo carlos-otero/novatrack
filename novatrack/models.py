@@ -1,4 +1,5 @@
 """Persistent domain, durable operations and notification delivery audit."""
+
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -39,6 +40,10 @@ class Shipment(Base):
     last_snapshot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     version: Mapped[int] = mapped_column(Integer, default=0)
     provider_error: Mapped[str | None] = mapped_column(String(200))
+    # Optional additional tracking parameters required by some carriers
+    destination_country: Mapped[str | None] = mapped_column(String(2))
+    destination_postal_code: Mapped[str | None] = mapped_column(String(20))
+    phone_number_last_4: Mapped[str | None] = mapped_column(String(10))
 
 
 class TrackingEvent(Base):
@@ -102,7 +107,9 @@ class NotificationChannel(Base):
     name: Mapped[str] = mapped_column(String(100))
     kind: Mapped[str] = mapped_column(String(16), default="webhook")
     url: Mapped[str | None] = mapped_column(String(2048))
-    events: Mapped[list] = mapped_column(JSON, default=lambda: ["status_changed", "delivered", "exception", "quota_low"])
+    events: Mapped[list] = mapped_column(
+        JSON, default=lambda: ["status_changed", "delivered", "exception", "quota_low"]
+    )
     secret_env: Mapped[str | None] = mapped_column(String(100))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 

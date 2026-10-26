@@ -7,6 +7,7 @@ enqueue_event          — transactional notification + delivery creation
 deliver_due            — locked delivery dispatch (webhook / Telegram)
 check_quota            — provider quota check + alert enqueue
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -66,8 +67,7 @@ def _require_public_ip(ip_str: str) -> None:
         raise ValueError(f"Invalid IP address {ip_str!r}") from exc
     if addr.is_multicast:
         raise ValueError(
-            f"Address {ip_str!r} is multicast — "
-            "multicast ranges (224.0.0.0/4, ff00::/8) are blocked"
+            f"Address {ip_str!r} is multicast — multicast ranges (224.0.0.0/4, ff00::/8) are blocked"
         )
     if not addr.is_global:
         raise ValueError(
@@ -130,7 +130,9 @@ def _build_webhook_body(payload: dict) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
-def _build_webhook_sig_headers(secret: str, notification_id: str, body: bytes, timestamp: int) -> dict[str, str]:
+def _build_webhook_sig_headers(
+    secret: str, notification_id: str, body: bytes, timestamp: int
+) -> dict[str, str]:
     """Return HMAC-SHA256 signing headers (without Content-Type).
 
     The event-id header is stable across all retry attempts for the same
@@ -168,7 +170,9 @@ class _PinnedHTTPSConn(http.client.HTTPSConnection):
             raise
 
 
-def _send_safe_https(url: str, body: bytes, headers: dict[str, str], *, timeout: float = 10.0) -> tuple[int, bytes]:
+def _send_safe_https(
+    url: str, body: bytes, headers: dict[str, str], *, timeout: float = 10.0
+) -> tuple[int, bytes]:
     """Deliver body to url via SSRF-protected, IP-pinned HTTPS connection.
 
     Validates scheme, credentials, query, fragment, CRLF, and max-length
@@ -339,7 +343,9 @@ def _attempt_telegram(
     bot_token = settings.telegram_bot_token
     if not bot_token:
         return None, False
-    token_val: str = bot_token.get_secret_value() if hasattr(bot_token, "get_secret_value") else str(bot_token)
+    token_val: str = (
+        bot_token.get_secret_value() if hasattr(bot_token, "get_secret_value") else str(bot_token)
+    )
 
     # Validate format before embedding in URL — raises ValueError (never logs token)
     _validate_telegram_token(token_val)
@@ -496,7 +502,9 @@ def deliver_due(
             if channel.kind == "webhook":
                 status_code, success = _attempt_webhook(delivery, notification, channel, now, client=client)
             elif channel.kind == "telegram":
-                status_code, success = _attempt_telegram(delivery, notification, channel, settings, client=client)
+                status_code, success = _attempt_telegram(
+                    delivery, notification, channel, settings, client=client
+                )
             else:
                 error_msg = f"unknown channel kind: {channel.kind!r}"
         except Exception as exc:

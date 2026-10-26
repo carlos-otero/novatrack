@@ -1,4 +1,5 @@
 """Migrations read DATABASE_URL only and never log connection parameters."""
+
 import os
 from logging.config import fileConfig
 
@@ -13,8 +14,12 @@ target_metadata = Base.metadata
 url = os.environ["DATABASE_URL"]
 
 if context.is_offline_mode():
-    context.configure(url=url.replace("postgresql://", "postgresql+psycopg://", 1),
-                      target_metadata=target_metadata, literal_binds=True, dialect_opts={"paramstyle": "named"})
+    context.configure(
+        url=url.replace("postgresql://", "postgresql+psycopg://", 1),
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
     with context.begin_transaction():
         context.run_migrations()
 else:

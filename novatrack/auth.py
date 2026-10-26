@@ -12,6 +12,7 @@ that tests can inject a MockTransport via::
 ``request.app.state.oauth`` — never from a module-level singleton — so
 different test fixtures each get isolated, non-stale config.
 """
+
 from __future__ import annotations
 
 import secrets

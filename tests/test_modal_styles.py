@@ -3,6 +3,7 @@
 These stylesheet contracts complement browser geometry checks at desktop and
 mobile viewports; they do not claim to replace a browser layout engine.
 """
+
 import re
 from html.parser import HTMLParser
 from pathlib import Path

@@ -1,4 +1,5 @@
 """PostgreSQL-only integration gates; TEST_DATABASE_URL must be disposable."""
+
 import hashlib
 import json
 import os
@@ -48,15 +49,31 @@ def pg_factory():
 def snapshot(number="Concurrent001"):
     # Official v2.2 accepted-item / webhook shape, not the legacy v1 'track'.
     return {
-        "number": number, "carrier": 100001,
+        "number": number,
+        "carrier": 100001,
         "track_info": {
             "latest_status": {"status": "InTransit", "sub_status": "InTransit_PickedUp"},
-            "latest_event": {"time_iso": "2026-10-01T10:00:00Z", "time_utc": "2026-10-01T10:00:00Z",
-                             "description": "Collected", "location": "Origin"},
-            "tracking": {"providers": [{"provider": {"name": "Test carrier"}, "events": [
-                {"time_iso": "2026-10-01T10:00:00Z", "time_utc": "2026-10-01T10:00:00Z",
-                 "description": "Collected", "location": "Origin"}
-            ]}]},
+            "latest_event": {
+                "time_iso": "2026-10-01T10:00:00Z",
+                "time_utc": "2026-10-01T10:00:00Z",
+                "description": "Collected",
+                "location": "Origin",
+            },
+            "tracking": {
+                "providers": [
+                    {
+                        "provider": {"name": "Test carrier"},
+                        "events": [
+                            {
+                                "time_iso": "2026-10-01T10:00:00Z",
+                                "time_utc": "2026-10-01T10:00:00Z",
+                                "description": "Collected",
+                                "location": "Origin",
+                            }
+                        ],
+                    }
+                ]
+            },
             "time_metrics": {"estimated_delivery_date": {"from": "2026-10-05", "to": "2026-10-06"}},
         },
     }
@@ -64,11 +81,19 @@ def snapshot(number="Concurrent001"):
 
 def test_concurrent_snapshots_refresh_locked_identity_map(pg_factory):
     from novatrack.tracking import apply_snapshot, create_shipment
+
     with pg_factory.begin() as session:
         shipment = create_shipment(session, None, number="Concurrent001", carrier=100001)
         sid = shipment.id
-        session.add(NotificationChannel(name="receiver", kind="webhook", url="https://example.org/receive",
-                                        secret_env="NOVATRACK_WEBHOOK_SECRET_TEST", events=["status_changed"]))
+        session.add(
+            NotificationChannel(
+                name="receiver",
+                kind="webhook",
+                url="https://example.org/receive",
+                secret_env="NOVATRACK_WEBHOOK_SECRET_TEST",
+                events=["status_changed"],
+            )
+        )
     barrier = threading.Barrier(2)
 
     def apply():
@@ -90,6 +115,7 @@ def test_concurrent_snapshots_refresh_locked_identity_map(pg_factory):
 
 def test_concurrent_identical_webhook_is_transactionally_idempotent(pg_factory):
     from novatrack.tracking import apply_webhook, create_shipment
+
     with pg_factory.begin() as session:
         create_shipment(session, None, number="Concurrent001", carrier=100001)
     payload = {"event": "TRACKING_UPDATED", "data": snapshot()}
@@ -113,13 +139,20 @@ def test_worker_uses_real_adapter_contract_and_processes_registration(pg_factory
     from novatrack.config import Settings
     from novatrack.tracking import create_shipment
     from novatrack.worker import tick
-    cfg = Settings(database_url="sqlite://", oidc_issuer="https://idp.example.org",
-                   oidc_client_id="test", oidc_client_secret="test", app_base_url="https://app.example.org",
-                   secret_key="x" * 48, track17_api_key="test")
+
+    cfg = Settings(
+        database_url="sqlite://",
+        oidc_issuer="https://idp.example.org",
+        oidc_client_id="test",
+        oidc_client_secret="test",
+        app_base_url="https://app.example.org",
+        secret_key="x" * 48,
+        track17_api_key="test",
+    )
     calls = []
 
     class Provider:
-        def register(self, number, carrier=None):
+        def register(self, number, carrier=None, *, param=None):
             calls.append(number)
             return {"number": number, "carrier": 100001}
 
@@ -143,10 +176,18 @@ def test_postgres_deliveries_do_not_duplicate_between_workers(pg_factory, monkey
     from types import SimpleNamespace
 
     from novatrack.notifications import deliver_due, enqueue_event
+
     monkeypatch.setenv("NOVATRACK_WEBHOOK_SECRET_TEST", "s" * 48)
     with pg_factory.begin() as session:
-        session.add(NotificationChannel(name="receiver", kind="webhook", url="https://example.org/receive",
-                                        secret_env="NOVATRACK_WEBHOOK_SECRET_TEST", events=["status_changed"]))
+        session.add(
+            NotificationChannel(
+                name="receiver",
+                kind="webhook",
+                url="https://example.org/receive",
+                secret_env="NOVATRACK_WEBHOOK_SECRET_TEST",
+                events=["status_changed"],
+            )
+        )
         session.flush()
         enqueue_event(session, "pg-delivery-one", {"event": "status_changed"})
     requests = []
@@ -162,8 +203,12 @@ def test_postgres_deliveries_do_not_duplicate_between_workers(pg_factory, monkey
     def deliver():
         with pg_factory.begin() as session:
             barrier.wait(timeout=10)
-            return deliver_due(session, SimpleNamespace(telegram_enabled=False), client=Receiver(),
-                               now=datetime(2030, 1, 1, tzinfo=UTC))
+            return deliver_due(
+                session,
+                SimpleNamespace(telegram_enabled=False),
+                client=Receiver(),
+                now=datetime(2030, 1, 1, tzinfo=UTC),
+            )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: deliver(), range(2)))

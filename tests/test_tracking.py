@@ -1,4 +1,5 @@
 """Durable tracking lifecycle tests — all DB interactions via in-memory SQLite."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -34,6 +35,7 @@ from novatrack.tracking import (
 # ─────────────────────────────────────────────────────────────
 # Fixtures
 # ─────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def db():
@@ -72,6 +74,7 @@ def provider():
 # ─────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────
+
 
 def _track_info(
     *,
@@ -154,6 +157,7 @@ def _snapshot(
 # create_shipment
 # ─────────────────────────────────────────────────────────────
 
+
 def test_create_shipment_creates_pending_and_queues_register(session, provider):
     s = create_shipment(session, provider, number="TRACK123", carrier=100)
     assert s.number == "TRACK123"
@@ -161,7 +165,11 @@ def test_create_shipment_creates_pending_and_queues_register(session, provider):
     assert s.status == "pending"
     assert s.bucket == "active"
 
-    ops = session.execute(select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)).scalars().all()
+    ops = (
+        session.execute(select(ProviderOperation).where(ProviderOperation.shipment_id == s.id))
+        .scalars()
+        .all()
+    )
     assert len(ops) == 1
     assert ops[0].kind == "register"
     assert ops[0].done is False
@@ -178,7 +186,11 @@ def test_create_shipment_tba_prefix_is_untrackable_no_register(session, provider
     s = create_shipment(session, provider, number="TBA123456789000")
     assert s.status == "untrackable"
     assert s.bucket == "active"
-    ops = session.execute(select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)).scalars().all()
+    ops = (
+        session.execute(select(ProviderOperation).where(ProviderOperation.shipment_id == s.id))
+        .scalars()
+        .all()
+    )
     assert len(ops) == 0
 
 
@@ -186,7 +198,11 @@ def test_create_shipment_tba_case_insensitive(session, provider):
     """TBA detection must be case-insensitive."""
     s = create_shipment(session, provider, number="tba999000")
     assert s.status == "untrackable"
-    ops = session.execute(select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)).scalars().all()
+    ops = (
+        session.execute(select(ProviderOperation).where(ProviderOperation.shipment_id == s.id))
+        .scalars()
+        .all()
+    )
     assert len(ops) == 0
 
 
@@ -262,6 +278,7 @@ def test_create_shipment_positive_carrier_is_allowed(session, provider):
 # archive_shipment
 # ─────────────────────────────────────────────────────────────
 
+
 def test_archive_shipment_sets_bucket_and_archives_at(session, provider):
     s = create_shipment(session, provider, number="TRACK123")
     archive_shipment(session, s, provider)
@@ -274,9 +291,15 @@ def test_archive_registered_shipment_queues_stop(session, provider):
     s.registered = True
     session.flush()
     archive_shipment(session, s, provider)
-    ops = session.execute(
-        select(ProviderOperation).where(ProviderOperation.shipment_id == s.id, ProviderOperation.kind == "stop")
-    ).scalars().all()
+    ops = (
+        session.execute(
+            select(ProviderOperation).where(
+                ProviderOperation.shipment_id == s.id, ProviderOperation.kind == "stop"
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(ops) == 1
 
 
@@ -289,12 +312,16 @@ def test_archive_shipment_with_pending_register_queues_stop(session, provider):
     s = create_shipment(session, provider, number="TRACK123")
     assert s.registered is False  # not registered yet, but register op is pending
     archive_shipment(session, s, provider)
-    ops = session.execute(
-        select(ProviderOperation).where(
-            ProviderOperation.shipment_id == s.id,
-            ProviderOperation.kind == "stop",
+    ops = (
+        session.execute(
+            select(ProviderOperation).where(
+                ProviderOperation.shipment_id == s.id,
+                ProviderOperation.kind == "stop",
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(ops) == 1
 
 
@@ -302,18 +329,20 @@ def test_archive_truly_unregistered_no_pending_ops_no_stop(session, provider):
     """If not registered AND no pending register op, no stop should be queued."""
     s = create_shipment(session, provider, number="TRACK123")
     # Mark the register op as done (e.g. it ran but registration failed permanently)
-    op = session.execute(
-        select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)
-    ).scalar_one()
+    op = session.execute(select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)).scalar_one()
     op.done = True
     session.flush()
 
     archive_shipment(session, s, provider)
-    stop_ops = session.execute(
-        select(ProviderOperation).where(
-            ProviderOperation.shipment_id == s.id, ProviderOperation.kind == "stop"
+    stop_ops = (
+        session.execute(
+            select(ProviderOperation).where(
+                ProviderOperation.shipment_id == s.id, ProviderOperation.kind == "stop"
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(stop_ops) == 0
 
 
@@ -328,6 +357,7 @@ def test_archive_already_archived_is_idempotent(session, provider):
 # trash_shipment
 # ─────────────────────────────────────────────────────────────
 
+
 def test_trash_shipment_sets_bucket_and_trashed_at(session, provider):
     s = create_shipment(session, provider, number="TRACK123")
     trash_shipment(session, s, provider)
@@ -338,9 +368,15 @@ def test_trash_shipment_sets_bucket_and_trashed_at(session, provider):
 def test_trash_shipment_queues_delete_op(session, provider):
     s = create_shipment(session, provider, number="TRACK123")
     trash_shipment(session, s, provider)
-    ops = session.execute(
-        select(ProviderOperation).where(ProviderOperation.shipment_id == s.id, ProviderOperation.kind == "delete")
-    ).scalars().all()
+    ops = (
+        session.execute(
+            select(ProviderOperation).where(
+                ProviderOperation.shipment_id == s.id, ProviderOperation.kind == "delete"
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(ops) == 1
 
 
@@ -348,9 +384,15 @@ def test_trash_shipment_idempotent_does_not_duplicate_delete_op(session, provide
     s = create_shipment(session, provider, number="TRACK123")
     trash_shipment(session, s, provider)
     trash_shipment(session, s, provider)
-    ops = session.execute(
-        select(ProviderOperation).where(ProviderOperation.shipment_id == s.id, ProviderOperation.kind == "delete")
-    ).scalars().all()
+    ops = (
+        session.execute(
+            select(ProviderOperation).where(
+                ProviderOperation.shipment_id == s.id, ProviderOperation.kind == "delete"
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(ops) == 1  # only one delete op
 
 
@@ -362,15 +404,18 @@ def test_tba_trash_shipment_no_delete_op(session, provider):
     """
     s = create_shipment(session, provider, number="TBA987654321000")
     trash_shipment(session, s, provider)
-    all_ops = session.execute(
-        select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)
-    ).scalars().all()
+    all_ops = (
+        session.execute(select(ProviderOperation).where(ProviderOperation.shipment_id == s.id))
+        .scalars()
+        .all()
+    )
     assert len(all_ops) == 0  # no ops ever: no register, no delete
 
 
 # ─────────────────────────────────────────────────────────────
 # manual_deliver
 # ─────────────────────────────────────────────────────────────
+
 
 def test_manual_deliver_sets_delivered_status_and_timestamp(session, provider):
     s = create_shipment(session, provider, number="TRACK123")
@@ -415,6 +460,7 @@ def test_manual_deliver_already_delivered_is_idempotent(session, provider):
 # ─────────────────────────────────────────────────────────────
 # apply_snapshot  (v2.2 track_info shape)
 # ─────────────────────────────────────────────────────────────
+
 
 def test_apply_snapshot_changes_status_and_returns_true(session, provider):
     s = create_shipment(session, provider, number="TRACK123")
@@ -468,9 +514,14 @@ def test_apply_snapshot_no_change_returns_false(session, provider):
     s = create_shipment(session, provider, number="TRACK123")
     apply_snapshot(session, s, _snapshot("TRACK123", status="InTransit"))
     changed = apply_snapshot(
-        session, s,
-        _snapshot("TRACK123", status="InTransit", event_time="2024-01-16T10:00:00+00:00",
-                  event_time_utc="2024-01-16T10:00:00Z"),
+        session,
+        s,
+        _snapshot(
+            "TRACK123",
+            status="InTransit",
+            event_time="2024-01-16T10:00:00+00:00",
+            event_time_utc="2024-01-16T10:00:00Z",
+        ),
     )
     assert changed is False
 
@@ -478,14 +529,28 @@ def test_apply_snapshot_no_change_returns_false(session, provider):
 def test_apply_snapshot_stale_guard_does_not_downgrade_status(session, provider):
     s = create_shipment(session, provider, number="TRACK123")
     # Fresh snapshot with later event time
-    apply_snapshot(session, s, _snapshot("TRACK123", status="InTransit",
-                                         event_time="2024-01-20T10:00:00+00:00",
-                                         event_time_utc="2024-01-20T10:00:00Z"))
+    apply_snapshot(
+        session,
+        s,
+        _snapshot(
+            "TRACK123",
+            status="InTransit",
+            event_time="2024-01-20T10:00:00+00:00",
+            event_time_utc="2024-01-20T10:00:00Z",
+        ),
+    )
     assert s.status == "in_transit"
     # Stale snapshot with earlier event time must not update status
-    changed = apply_snapshot(session, s, _snapshot("TRACK123", status="Delivered",
-                                                    event_time="2024-01-15T10:00:00+00:00",
-                                                    event_time_utc="2024-01-15T10:00:00Z"))
+    changed = apply_snapshot(
+        session,
+        s,
+        _snapshot(
+            "TRACK123",
+            status="Delivered",
+            event_time="2024-01-15T10:00:00+00:00",
+            event_time_utc="2024-01-15T10:00:00Z",
+        ),
+    )
     assert changed is False
     assert s.status == "in_transit"
 
@@ -494,9 +559,16 @@ def test_apply_snapshot_delivered_terminal_blocks_status_change(session, provide
     s = create_shipment(session, provider, number="TRACK123")
     manual_deliver(session, s)
     # Later snapshot says InTransit — must not change back
-    changed = apply_snapshot(session, s, _snapshot("TRACK123", status="InTransit",
-                                                    event_time="2099-01-01T00:00:00+00:00",
-                                                    event_time_utc="2099-01-01T00:00:00Z"))
+    changed = apply_snapshot(
+        session,
+        s,
+        _snapshot(
+            "TRACK123",
+            status="InTransit",
+            event_time="2099-01-01T00:00:00+00:00",
+            event_time_utc="2099-01-01T00:00:00Z",
+        ),
+    )
     assert changed is False
     assert s.status == "delivered"
 
@@ -505,9 +577,16 @@ def test_apply_snapshot_archived_bucket_blocks_status_change(session, provider):
     s = create_shipment(session, provider, number="TRACK123")
     s.bucket = "archive"
     session.flush()
-    changed = apply_snapshot(session, s, _snapshot("TRACK123", status="InTransit",
-                                                    event_time="2099-01-01T00:00:00+00:00",
-                                                    event_time_utc="2099-01-01T00:00:00Z"))
+    changed = apply_snapshot(
+        session,
+        s,
+        _snapshot(
+            "TRACK123",
+            status="InTransit",
+            event_time="2099-01-01T00:00:00+00:00",
+            event_time_utc="2099-01-01T00:00:00Z",
+        ),
+    )
     assert changed is False
 
 
@@ -515,21 +594,36 @@ def test_apply_snapshot_trashed_bucket_blocks_status_change(session, provider):
     s = create_shipment(session, provider, number="TRACK123")
     s.bucket = "trash"
     session.flush()
-    changed = apply_snapshot(session, s, _snapshot("TRACK123", status="InTransit",
-                                                    event_time="2099-01-01T00:00:00+00:00",
-                                                    event_time_utc="2099-01-01T00:00:00Z"))
+    changed = apply_snapshot(
+        session,
+        s,
+        _snapshot(
+            "TRACK123",
+            status="InTransit",
+            event_time="2099-01-01T00:00:00+00:00",
+            event_time_utc="2099-01-01T00:00:00Z",
+        ),
+    )
     assert changed is False
 
 
 def test_apply_snapshot_preserves_historical_events(session, provider):
     """Older snapshots with fewer events must not erase already-stored events."""
     s = create_shipment(session, provider, number="TRACK123")
-    snap1 = _snapshot("TRACK123", event_time="2024-01-15T10:00:00+00:00",
-                       event_time_utc="2024-01-15T10:00:00Z", description="Event A")
+    snap1 = _snapshot(
+        "TRACK123",
+        event_time="2024-01-15T10:00:00+00:00",
+        event_time_utc="2024-01-15T10:00:00Z",
+        description="Event A",
+    )
     apply_snapshot(session, s, snap1)
 
-    snap2 = _snapshot("TRACK123", event_time="2024-01-16T10:00:00+00:00",
-                       event_time_utc="2024-01-16T10:00:00Z", description="Event B")
+    snap2 = _snapshot(
+        "TRACK123",
+        event_time="2024-01-16T10:00:00+00:00",
+        event_time_utc="2024-01-16T10:00:00Z",
+        description="Event B",
+    )
     apply_snapshot(session, s, snap2)
 
     events = session.execute(select(TrackingEvent).where(TrackingEvent.shipment_id == s.id)).scalars().all()
@@ -540,18 +634,32 @@ def test_apply_snapshot_preserves_historical_events(session, provider):
 
 def test_apply_snapshot_exception_event_key(session, provider):
     s = create_shipment(session, provider, number="TRACK123")
-    apply_snapshot(session, s, _snapshot("TRACK123", status="Exception",
-                                         event_time="2024-01-15T10:00:00+00:00",
-                                         event_time_utc="2024-01-15T10:00:00Z"))
+    apply_snapshot(
+        session,
+        s,
+        _snapshot(
+            "TRACK123",
+            status="Exception",
+            event_time="2024-01-15T10:00:00+00:00",
+            event_time_utc="2024-01-15T10:00:00Z",
+        ),
+    )
     n = session.execute(select(Notification)).scalar_one()
     assert n.payload["event"] == "exception"
 
 
 def test_apply_snapshot_delivered_event_key(session, provider):
     s = create_shipment(session, provider, number="TRACK123")
-    apply_snapshot(session, s, _snapshot("TRACK123", status="Delivered",
-                                         event_time="2024-01-15T10:00:00+00:00",
-                                         event_time_utc="2024-01-15T10:00:00Z"))
+    apply_snapshot(
+        session,
+        s,
+        _snapshot(
+            "TRACK123",
+            status="Delivered",
+            event_time="2024-01-15T10:00:00+00:00",
+            event_time_utc="2024-01-15T10:00:00Z",
+        ),
+    )
     n = session.execute(select(Notification)).scalar_one()
     assert n.payload["event"] == "delivered"
     assert s.delivered_at is not None
@@ -561,17 +669,31 @@ def test_apply_snapshot_eta_not_overwritten_by_stale_snapshot(session, provider)
     """ETA must not be overwritten by a stale snapshot."""
     s = create_shipment(session, provider, number="TRACK123")
     # First snapshot with a later event time; sets ETA
-    apply_snapshot(session, s, _snapshot("TRACK123",
-                                          event_time="2024-01-20T10:00:00+00:00",
-                                          event_time_utc="2024-01-20T10:00:00Z",
-                                          eta_from="2024-02-01", eta_to="2024-02-03"))
+    apply_snapshot(
+        session,
+        s,
+        _snapshot(
+            "TRACK123",
+            event_time="2024-01-20T10:00:00+00:00",
+            event_time_utc="2024-01-20T10:00:00Z",
+            eta_from="2024-02-01",
+            eta_to="2024-02-03",
+        ),
+    )
     original_eta = dict(s.eta)
 
     # Stale snapshot (older event time) with different ETA
-    apply_snapshot(session, s, _snapshot("TRACK123",
-                                          event_time="2024-01-15T10:00:00+00:00",
-                                          event_time_utc="2024-01-15T10:00:00Z",
-                                          eta_from="2024-03-01", eta_to="2024-03-05"))
+    apply_snapshot(
+        session,
+        s,
+        _snapshot(
+            "TRACK123",
+            event_time="2024-01-15T10:00:00+00:00",
+            event_time_utc="2024-01-15T10:00:00Z",
+            eta_from="2024-03-01",
+            eta_to="2024-03-05",
+        ),
+    )
     assert s.eta == original_eta
 
 
@@ -579,9 +701,16 @@ def test_apply_snapshot_no_timestamps_with_cursor_treated_as_stale(session, prov
     """Snapshot with no event timestamps + existing cursor must not regress status."""
     s = create_shipment(session, provider, number="TRACK123")
     # First snapshot sets the cursor
-    apply_snapshot(session, s, _snapshot("TRACK123", status="InTransit",
-                                          event_time="2024-01-20T10:00:00+00:00",
-                                          event_time_utc="2024-01-20T10:00:00Z"))
+    apply_snapshot(
+        session,
+        s,
+        _snapshot(
+            "TRACK123",
+            status="InTransit",
+            event_time="2024-01-20T10:00:00+00:00",
+            event_time_utc="2024-01-20T10:00:00Z",
+        ),
+    )
     assert s.status == "in_transit"
 
     # Second snapshot: no timestamps in any events — must not change status
@@ -591,13 +720,15 @@ def test_apply_snapshot_no_timestamps_with_cursor_treated_as_stale(session, prov
         "track_info": {
             "latest_status": {"status": "Delivered", "sub_status": "Delivered_Other"},
             "tracking": {
-                "providers": [{
-                    "provider": {"key": 100, "name": "Test"},
-                    "events": [
-                        # events without time_iso or time_utc
-                        {"description": "Out for delivery", "location": "NYC"},
-                    ],
-                }]
+                "providers": [
+                    {
+                        "provider": {"key": 100, "name": "Test"},
+                        "events": [
+                            # events without time_iso or time_utc
+                            {"description": "Out for delivery", "location": "NYC"},
+                        ],
+                    }
+                ]
             },
         },
     }
@@ -621,14 +752,18 @@ def test_apply_snapshot_empty_status_does_not_transition_to_untrackable(session,
                 "location": "NY",
             },
             "tracking": {
-                "providers": [{
-                    "provider": {"key": 100, "name": "T"},
-                    "events": [{
-                        "time_iso": "2024-01-25T10:00:00+00:00",
-                        "time_utc": "2024-01-25T10:00:00Z",
-                        "description": "Status update",
-                    }],
-                }]
+                "providers": [
+                    {
+                        "provider": {"key": 100, "name": "T"},
+                        "events": [
+                            {
+                                "time_iso": "2024-01-25T10:00:00+00:00",
+                                "time_utc": "2024-01-25T10:00:00Z",
+                                "description": "Status update",
+                            }
+                        ],
+                    }
+                ]
             },
         },
     }
@@ -646,15 +781,19 @@ def test_apply_snapshot_null_fields_normalize_to_empty_string(session, provider)
         "track_info": {
             "latest_status": {"status": "InTransit", "sub_status": "InTransit_Other"},
             "tracking": {
-                "providers": [{
-                    "provider": None,  # null provider
-                    "events": [{
-                        "time_iso": "2024-01-15T10:00:00+00:00",
-                        "time_utc": "2024-01-15T10:00:00Z",
-                        "description": None,  # null description
-                        "location": None,    # null location
-                    }],
-                }]
+                "providers": [
+                    {
+                        "provider": None,  # null provider
+                        "events": [
+                            {
+                                "time_iso": "2024-01-15T10:00:00+00:00",
+                                "time_utc": "2024-01-15T10:00:00Z",
+                                "description": None,  # null description
+                                "location": None,  # null location
+                            }
+                        ],
+                    }
+                ]
             },
         },
     }
@@ -669,6 +808,7 @@ def test_apply_snapshot_null_fields_normalize_to_empty_string(session, provider)
 # refresh_shipment
 # ─────────────────────────────────────────────────────────────
 
+
 def test_refresh_shipment_calls_gettrackinfo_and_applies_snapshot(session, provider):
     s = create_shipment(session, provider, number="TRACK123", carrier=100)
     provider.gettrackinfo.return_value = _snapshot("TRACK123", carrier=100, status="InTransit")
@@ -681,6 +821,7 @@ def test_refresh_shipment_calls_gettrackinfo_and_applies_snapshot(session, provi
 # ─────────────────────────────────────────────────────────────
 # apply_webhook
 # ─────────────────────────────────────────────────────────────
+
 
 def test_apply_webhook_stores_receipt_and_updates_shipment(session, provider):
     s = create_shipment(session, provider, number="TRACK123", carrier=100)
@@ -806,15 +947,15 @@ def test_apply_webhook_mismatched_carrier_ignored(session, provider):
 # process_operations
 # ─────────────────────────────────────────────────────────────
 
+
 def test_process_operations_runs_register_marks_done(session, provider):
     s = create_shipment(session, provider, number="TRACK123", carrier=100)
     provider.register.return_value = {"number": "TRACK123", "carrier": 100}
     count = process_operations(session, provider)
     assert count == 1
-    provider.register.assert_called_once_with("TRACK123", 100)
-    op = session.execute(
-        select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)
-    ).scalar_one()
+    # register is now called with keyword param= (may be None for unknown carriers)
+    provider.register.assert_called_once_with("TRACK123", 100, param=None)
+    op = session.execute(select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)).scalar_one()
     assert op.done is True
     assert s.registered is True
 
@@ -840,7 +981,8 @@ def test_process_operations_register_before_stop_for_same_shipment(session, prov
     s = create_shipment(session, provider, number="TRACK123")
     # Register op exists; add a stop op that is due slightly earlier
     stop_op = ProviderOperation(
-        shipment_id=s.id, kind="stop",
+        shipment_id=s.id,
+        kind="stop",
         next_attempt_at=datetime.now(UTC) - timedelta(seconds=5),
     )
     session.add(stop_op)
@@ -888,9 +1030,7 @@ def test_process_operations_retry_on_provider_error(session, provider):
     provider.register.side_effect = ProviderError("network glitch")
     count = process_operations(session, provider)
     assert count == 0
-    op = session.execute(
-        select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)
-    ).scalar_one()
+    op = session.execute(select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)).scalar_one()
     assert op.done is False
     assert op.attempts == 1
     assert op.next_attempt_at > datetime.now(UTC)
@@ -907,9 +1047,7 @@ def test_process_operations_error_message_is_sanitized(session, provider):
 
 def test_process_operations_skips_not_yet_due(session, provider):
     s = create_shipment(session, provider, number="TRACK123")
-    op = session.execute(
-        select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)
-    ).scalar_one()
+    op = session.execute(select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)).scalar_one()
     op.next_attempt_at = datetime.now(UTC) + timedelta(hours=1)
     session.flush()
     count = process_operations(session, provider)
@@ -930,9 +1068,7 @@ def test_process_operations_unknown_kind_fails_not_marks_done(session, provider)
     """Unknown op kind must be recorded as failure, NOT silently marked done."""
     s = create_shipment(session, provider, number="TRACK123")
     # Mark the register op as already done
-    op = session.execute(
-        select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)
-    ).scalar_one()
+    op = session.execute(select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)).scalar_one()
     op.done = True
     session.flush()
 
@@ -971,9 +1107,7 @@ def test_process_operations_delete_sets_registered_false(session, provider):
 def test_process_operations_backoff_caps_exponent(session, provider):
     """High attempt counts must not cause huge integer arithmetic."""
     s = create_shipment(session, provider, number="TRACK123")
-    op = session.execute(
-        select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)
-    ).scalar_one()
+    op = session.execute(select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)).scalar_one()
     # Simulate many attempts
     op.attempts = 200
     session.flush()
@@ -985,12 +1119,14 @@ def test_process_operations_backoff_caps_exponent(session, provider):
     session.refresh(op)
     # delay must still be within the cap (3600 seconds)
     from novatrack.tracking import _backoff_delay
+
     assert _backoff_delay(201) <= 3600
 
 
 # ─────────────────────────────────────────────────────────────
 # housekeeping
 # ─────────────────────────────────────────────────────────────
+
 
 def _ago(days: int) -> datetime:
     return datetime.now(UTC) - timedelta(days=days)
@@ -1045,9 +1181,11 @@ def test_housekeeping_does_not_purge_when_register_still_pending(session_s, prov
     trash_shipment(session_s, s, provider)
     s.trashed_at = _ago(31)
     # Mark delete done but leave register pending
-    for op in session_s.execute(
-        select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)
-    ).scalars().all():
+    for op in (
+        session_s.execute(select(ProviderOperation).where(ProviderOperation.shipment_id == s.id))
+        .scalars()
+        .all()
+    ):
         if op.kind == "delete":
             op.done = True
     session_s.flush()
@@ -1062,9 +1200,11 @@ def test_housekeeping_purges_after_all_ops_marked_done(session_s, provider):
     s = create_shipment(session_s, provider, number="TRACK123")
     trash_shipment(session_s, s, provider)
     s.trashed_at = _ago(31)
-    for op in session_s.execute(
-        select(ProviderOperation).where(ProviderOperation.shipment_id == s.id)
-    ).scalars().all():
+    for op in (
+        session_s.execute(select(ProviderOperation).where(ProviderOperation.shipment_id == s.id))
+        .scalars()
+        .all()
+    ):
         op.done = True
     session_s.flush()
     sid = s.id

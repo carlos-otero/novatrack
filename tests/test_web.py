@@ -8,6 +8,7 @@ Only external HTTP calls are mocked:
 
 Run: uv run pytest tests/test_web.py -q
 """
+
 from __future__ import annotations
 
 import base64
@@ -437,9 +438,7 @@ def test_api_get_shipment_not_found(client, api_key):
 
 def test_api_archive_shipment(client, api_key, sf):
     ship_id = _make_shipment(sf, "ARCHTEST001")
-    r = client.post(
-        f"/api/v1/shipments/{ship_id}/archive", headers={"X-API-Key": api_key}
-    )
+    r = client.post(f"/api/v1/shipments/{ship_id}/archive", headers={"X-API-Key": api_key})
     assert r.status_code in (200, 204)
     # Verify DB state
     with sf() as s:
@@ -453,9 +452,7 @@ def test_api_archive_shipment(client, api_key, sf):
 
 
 def test_webhook_valid_signature_accepted(client):
-    payload = json.dumps(
-        {"event": "TRACKING_UPDATED", "data": {"accepted": []}}
-    ).encode()
+    payload = json.dumps({"event": "TRACKING_UPDATED", "data": {"accepted": []}}).encode()
     sig = _webhook_sig(payload)
     r = client.post("/webhooks/17track", content=payload, headers=_webhook_headers(sig))
     assert r.status_code == 200
@@ -529,23 +526,27 @@ def test_webhook_updates_shipment_status(client, sf):
     """Signed webhook with official track_info shape updates shipment status in DB."""
     ship_id = _make_shipment(sf, "WEBHOOKTEST01", status="pending")
 
-    payload = json.dumps({
-        "event": "TRACKING_UPDATED",
-        "data": {
-            "accepted": [{
-                "number": "WEBHOOKTEST01",
-                "track_info": {
-                    "latest_status": {"status": "InTransit", "sub_status": ""},
-                    "latest_event": {
-                        "time_iso": "2024-01-01T12:00:00Z",
-                        "description": "In Transit",
-                        "location": "Hub",
-                    },
-                    "tracking": {"providers": []},
-                },
-            }]
-        },
-    }).encode()
+    payload = json.dumps(
+        {
+            "event": "TRACKING_UPDATED",
+            "data": {
+                "accepted": [
+                    {
+                        "number": "WEBHOOKTEST01",
+                        "track_info": {
+                            "latest_status": {"status": "InTransit", "sub_status": ""},
+                            "latest_event": {
+                                "time_iso": "2024-01-01T12:00:00Z",
+                                "description": "In Transit",
+                                "location": "Hub",
+                            },
+                            "tracking": {"providers": []},
+                        },
+                    }
+                ]
+            },
+        }
+    ).encode()
     sig = _webhook_sig(payload)
     r = client.post("/webhooks/17track", content=payload, headers=_webhook_headers(sig))
     assert r.status_code == 200
@@ -609,9 +610,7 @@ def test_auth_login_redirects_to_oidc(app, client):
     from fastapi.responses import RedirectResponse as RR
 
     with patch("novatrack.app.oidc_login", new_callable=AsyncMock) as mock_login:
-        mock_login.return_value = RR(
-            f"{TEST_OIDC_ISSUER}/authorize?state=x&response_type=code"
-        )
+        mock_login.return_value = RR(f"{TEST_OIDC_ISSUER}/authorize?state=x&response_type=code")
         r = client.get("/auth/login", follow_redirects=False)
 
     assert r.status_code in (302, 307)
@@ -667,21 +666,20 @@ def test_session_cookie_set_after_oidc_callback(settings, sf, provider):
             "id_token": "eyJ.fake.token",
         }
 
-    with patch("novatrack.app.oidc_login", new_callable=AsyncMock) as mock_login, \
-         patch("novatrack.app.oidc_exchange", new_callable=AsyncMock) as mock_exchange:
+    with (
+        patch("novatrack.app.oidc_login", new_callable=AsyncMock) as mock_login,
+        patch("novatrack.app.oidc_exchange", new_callable=AsyncMock) as mock_exchange,
+    ):
         from starlette.responses import RedirectResponse as RR
-        mock_login.return_value = RR(
-            f"{TEST_OIDC_ISSUER}/authorize?state=abc&nonce=xyz&code_challenge=y"
-        )
+
+        mock_login.return_value = RR(f"{TEST_OIDC_ISSUER}/authorize?state=abc&nonce=xyz&code_challenge=y")
         mock_exchange.side_effect = fake_token
 
         with TestClient(app2, base_url="https://testserver", raise_server_exceptions=False) as c:
             r_login = c.get("/auth/login", follow_redirects=False)
             assert r_login.status_code in (302, 307)
 
-            r_cb = c.get(
-                "/auth/callback?code=fakecode&state=fakestate", follow_redirects=False
-            )
+            r_cb = c.get("/auth/callback?code=fakecode&state=fakestate", follow_redirects=False)
             assert r_cb.status_code in (302, 303, 200)
 
             set_cookie = r_cb.headers.get("set-cookie", "")
@@ -711,6 +709,7 @@ def test_session_max_age_is_8h(settings, sf, provider):
             sc = r.headers.get("set-cookie", "").lower()
             if "max-age=" in sc:
                 import re
+
                 m = re.search(r"max-age=(\d+)", sc)
                 if m:
                     age = int(m.group(1))
@@ -734,10 +733,7 @@ def test_api_rate_limit_per_credential(settings, sf, provider):
 
     raw, _ = _make_api_key_in_db(sf, name="ratelimit-key")
     with TestClient(app2, base_url="https://testserver", raise_server_exceptions=False) as c:
-        codes = [
-            c.get("/api/v1/shipments", headers={"X-API-Key": raw}).status_code
-            for _ in range(6)
-        ]
+        codes = [c.get("/api/v1/shipments", headers={"X-API-Key": raw}).status_code for _ in range(6)]
 
     assert 429 in codes
 
@@ -801,9 +797,7 @@ def test_ui_create_shipment_duplicate_shows_error(authed_client, sf):
     # First create
     c.post("/shipments", data={"_csrf": csrf, "number": "DUPTEST001"}, follow_redirects=False)
     # Second create (duplicate)
-    r = c.post(
-        "/shipments", data={"_csrf": csrf, "number": "DUPTEST001"}, follow_redirects=False
-    )
+    r = c.post("/shipments", data={"_csrf": csrf, "number": "DUPTEST001"}, follow_redirects=False)
     # Should show form with error, not crash
     assert r.status_code in (200, 303)
 
@@ -812,9 +806,7 @@ def test_ui_archive_shipment_persists(authed_client, sf):
     """POST /shipments/{id}/archive moves shipment to archive bucket."""
     c, csrf = authed_client
     ship_id = _make_shipment(sf, "ARCH_UI_001")
-    r = c.post(
-        f"/shipments/{ship_id}/archive", data={"_csrf": csrf}, follow_redirects=False
-    )
+    r = c.post(f"/shipments/{ship_id}/archive", data={"_csrf": csrf}, follow_redirects=False)
     assert r.status_code == 303
     with sf() as s:
         ship = s.get(Shipment, ship_id)
@@ -825,9 +817,7 @@ def test_ui_trash_shipment_persists(authed_client, sf):
     """POST /shipments/{id}/trash moves shipment to trash bucket."""
     c, csrf = authed_client
     ship_id = _make_shipment(sf, "TRASH_UI_001")
-    r = c.post(
-        f"/shipments/{ship_id}/trash", data={"_csrf": csrf}, follow_redirects=False
-    )
+    r = c.post(f"/shipments/{ship_id}/trash", data={"_csrf": csrf}, follow_redirects=False)
     assert r.status_code == 303
     with sf() as s:
         ship = s.get(Shipment, ship_id)
@@ -838,9 +828,7 @@ def test_ui_deliver_untrackable_shipment(authed_client, sf):
     """POST /shipments/{id}/deliver marks untrackable shipment as delivered."""
     c, csrf = authed_client
     ship_id = _make_shipment(sf, "TBATESTXYZ1", status="untrackable")
-    r = c.post(
-        f"/shipments/{ship_id}/deliver", data={"_csrf": csrf}, follow_redirects=False
-    )
+    r = c.post(f"/shipments/{ship_id}/deliver", data={"_csrf": csrf}, follow_redirects=False)
     assert r.status_code == 303
     with sf() as s:
         ship = s.get(Shipment, ship_id)
@@ -851,9 +839,7 @@ def test_ui_deliver_rejects_trackable_shipment(authed_client, sf):
     """POST /shipments/{id}/deliver on a trackable shipment returns 400."""
     c, csrf = authed_client
     ship_id = _make_shipment(sf, "TRACKABLE001", status="in_transit")
-    r = c.post(
-        f"/shipments/{ship_id}/deliver", data={"_csrf": csrf}, follow_redirects=False
-    )
+    r = c.post(f"/shipments/{ship_id}/deliver", data={"_csrf": csrf}, follow_redirects=False)
     assert r.status_code == 400
 
 
@@ -861,21 +847,18 @@ def test_ui_refresh_rejects_untrackable(authed_client, sf):
     """POST /shipments/{id}/refresh on untrackable shipment returns 400."""
     c, csrf = authed_client
     ship_id = _make_shipment(sf, "TBAREFRESH01", status="untrackable")
-    r = c.post(
-        f"/shipments/{ship_id}/refresh", data={"_csrf": csrf}, follow_redirects=False
-    )
+    r = c.post(f"/shipments/{ship_id}/refresh", data={"_csrf": csrf}, follow_redirects=False)
     assert r.status_code == 400
 
 
 def test_ui_refresh_rejects_unregistered(authed_client, sf):
-    """POST /shipments/{id}/refresh on unregistered shipment returns 400."""
+    """POST /shipments/{id}/refresh on unregistered shipment redirects with msg=not_registered."""
     c, csrf = authed_client
     ship_id = _make_shipment(sf, "UNREG001", status="pending")
     # registered defaults to False
-    r = c.post(
-        f"/shipments/{ship_id}/refresh", data={"_csrf": csrf}, follow_redirects=False
-    )
-    assert r.status_code == 400
+    r = c.post(f"/shipments/{ship_id}/refresh", data={"_csrf": csrf}, follow_redirects=False)
+    assert r.status_code == 303
+    assert "not_registered" in r.headers["location"]
 
 
 def test_ui_settings_retention_saves(authed_client, sf):
@@ -984,9 +967,16 @@ def test_settings_renders_real_quota_keys_and_eta_range(authed_client, sf):
         cfg = s.get(AppSettings, 1) or AppSettings(id=1)
         cfg.quota = {"quota_total": 200, "quota_used": 160, "quota_remain": 40}
         s.merge(cfg)
-        ship = Shipment(number="ETAREG001", status="in_transit", bucket="active",
-                        eta={"source": "Official", "from": "2026-10-05T08:00:00-05:00",
-                             "to": "2026-10-07T13:00:00-05:00"})
+        ship = Shipment(
+            number="ETAREG001",
+            status="in_transit",
+            bucket="active",
+            eta={
+                "source": "Official",
+                "from": "2026-10-05T08:00:00-05:00",
+                "to": "2026-10-07T13:00:00-05:00",
+            },
+        )
         s.add(ship)
         s.flush()
         sid = ship.id

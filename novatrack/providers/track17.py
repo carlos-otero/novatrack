@@ -11,7 +11,23 @@ Error codes (17track API v2.2, authoritative source):
 
   Note: -18019904 = "Only stopped numbers can be re-tracked" (retrack, NOT register)
         -18019910 = "Carrier Code incorrect" (NOT already-stopped)
+
+changecarrier error codes (v2.2):
+  -18019801  Not registered — only registered tracking numbers can have carrier changed
+  -18019802  Number is being processed — retry later
+  -18019803  carrier_new cannot be null
+  -18019804  Carrier code does not exist
+  -18019805  Tracking number format does not match the specified carrier
+  -18019806  Carrier can only be changed for active (Tracking) numbers
+  -18019807  Already using this carrier (idempotent)
+  -18019808  Carrier change limit exceeded (max 5 changes per number)
+
+Additional-parameter error codes (register):
+  -18010018  Missing required additional parameter (e.g. postal_code)
+  -18010019  Additional parameter format invalid
+  -18010020  Additional parameter value invalid
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -24,9 +40,43 @@ from novatrack.providers import ProviderError
 _BASE = "https://api.17track.net/track/v2.2"
 
 # ── Error codes whose rejection is semantically idempotent ──────────────────
-_ALREADY_REGISTERED = -18019901   # "Tracking number already registered"
-_NOT_REGISTERED = -18019902       # "Tracking number is not registered yet"
-_ALREADY_STOPPED = -18019906      # "Only numbers being tracked can be stopped"
+_ALREADY_REGISTERED = -18019901  # "Tracking number already registered"
+_NOT_REGISTERED = -18019902  # "Tracking number is not registered yet"
+_ALREADY_STOPPED = -18019906  # "Only numbers being tracked can be stopped"
+
+# ── changecarrier error codes ────────────────────────────────────────────────
+_CC_NOT_REGISTERED = -18019801  # Number must be registered first
+_CC_PROCESSING = -18019802  # Number is currently being processed
+_CC_NULL_CARRIER = -18019803  # carrier_new cannot be null
+_CC_INVALID_CARRIER = -18019804  # Carrier code does not exist
+_CC_FORMAT_MISMATCH = -18019805  # Number format incompatible with carrier
+_CC_NOT_ACTIVE = -18019806  # Number not in active tracking state
+_CC_SAME_CARRIER = -18019807  # Already using this carrier (idempotent)
+_CC_LIMIT_EXCEEDED = -18019808  # Max 5 carrier changes reached
+
+# Human-readable messages for changecarrier rejection codes
+_CC_MESSAGES: dict[int, str] = {
+    _CC_NOT_REGISTERED: "Shipment must be registered with 17TRACK before changing carrier",
+    _CC_PROCESSING: "Shipment is currently being processed — please retry shortly",
+    _CC_NULL_CARRIER: "New carrier code cannot be empty",
+    _CC_INVALID_CARRIER: "Carrier code does not exist",
+    _CC_FORMAT_MISMATCH: "Tracking number format does not match the specified carrier",
+    _CC_NOT_ACTIVE: "Carrier can only be changed for actively-tracked shipments",
+    _CC_SAME_CARRIER: "Shipment is already using this carrier",
+    _CC_LIMIT_EXCEEDED: "Carrier has already been changed 5 times (maximum reached)",
+}
+
+# ── Additional-parameter error codes (register) ──────────────────────────────
+_MISSING_PARAM = -18010018  # Missing required additional parameter
+_INVALID_PARAM_FORMAT = -18010019  # Additional parameter format invalid
+_INVALID_PARAM_VALUE = -18010020  # Additional parameter value invalid
+
+# Human-readable prompts for missing-parameter rejections
+_PARAM_MISSING_PROMPT = (
+    "Registration requires additional information for this carrier — "
+    "please add the missing field(s) (postal code, destination country, "
+    "or last 4 digits of phone) and the shipment will be re-registered."
+)
 
 # ── Canonical status mapping ─────────────────────────────────────────────────
 _STATUS_MAP: dict[str, str] = {
@@ -36,7 +86,7 @@ _STATUS_MAP: dict[str, str] = {
     "intransit": "in_transit",
     "outfordelivery": "out_for_delivery",
     "availableforpickup": "out_for_delivery",
-    "deliveryfailure": "exception",   # main status DeliveryFailure → exception
+    "deliveryfailure": "exception",  # main status DeliveryFailure → exception
     "delivered": "delivered",
     "exception": "exception",
     "expired": "expired",
@@ -135,11 +185,7 @@ class Track17Provider:
         # Detect schema error path: data has 'errors' but no accepted/rejected
         if "errors" in data and "accepted" not in data and "rejected" not in data:
             err_list = data.get("errors") or []
-            codes = [
-                str(e.get("code", "?"))
-                for e in err_list
-                if isinstance(e, dict)
-            ]
+            codes = [str(e.get("code", "?")) for e in err_list if isinstance(e, dict)]
             raise ProviderError(f"provider returned schema error(s): {', '.join(codes)}")
 
         return data
@@ -158,11 +204,24 @@ class Track17Provider:
 
     # ── Public API ──────────────────────────────────────────────────────────
 
-    def register(self, number: str, carrier: int | None = None) -> dict:
-        """Register a tracking number. Idempotent if already registered."""
+    def register(
+        self,
+        number: str,
+        carrier: int | None = None,
+        *,
+        param: str | None = None,
+    ) -> dict:
+        """Register a tracking number. Idempotent if already registered.
+
+        param: v2.2 additional-parameters string (semicolon-separated values
+               in the order declared by additional_parameters.json for this
+               carrier).  Pass None when no additional params are needed.
+        """
         body: dict = {"number": number}
         if carrier is not None:
             body["carrier"] = carrier
+        if param is not None:
+            body["param"] = param
         data = self._post("register", [body])
 
         if acc := self._find_accepted(data, number):
@@ -176,6 +235,8 @@ class Track17Provider:
                 detected = rej.get("carrier")
                 effective_carrier = detected if detected is not None else carrier
                 return {"number": number, "carrier": effective_carrier}
+            if err_code in (_MISSING_PARAM, _INVALID_PARAM_FORMAT, _INVALID_PARAM_VALUE):
+                raise ProviderError(_PARAM_MISSING_PROMPT, retryable_without_quota=True)
             raise ProviderError(f"register rejected (code {err_code})")
 
         raise ProviderError("register: number absent from accepted and rejected")
@@ -212,7 +273,7 @@ class Track17Provider:
             err_code = (rej.get("error") or {}).get("code")
             if err_code in (_ALREADY_STOPPED, _NOT_REGISTERED):
                 return {"number": number}
-            raise ProviderError(f"stoptrack rejected (code {err_code})") 
+            raise ProviderError(f"stoptrack rejected (code {err_code})")
 
         raise ProviderError("stoptrack: number absent from response")
 
@@ -238,3 +299,42 @@ class Track17Provider:
     def getquota(self) -> dict:
         """Return account quota. The data dict is returned as-is."""
         return self._post("getquota", [])
+
+    def changecarrier(
+        self,
+        number: str,
+        carrier_new: int,
+        carrier_old: int | None = None,
+    ) -> dict:
+        """Change the carrier for a registered tracking number.
+
+        carrier_old is optional; pass it when the number has multiple assigned
+        carriers to disambiguate which one to replace.
+
+        Raises ProviderError with a human-readable message on all rejections,
+        including the -18019801..-18019808 range.
+        -18019807 (same carrier) is treated as idempotent success.
+        Costs one shipment quota on acceptance.
+        """
+        body: dict = {"number": number, "carrier": carrier_new}
+        if carrier_old is not None:
+            body["carrier_old"] = carrier_old
+        data = self._post("changecarrier", [body])
+
+        if acc := self._find_accepted(data, number):
+            return acc
+
+        rej = self._find_rejected(data, number)
+        if rej is not None:
+            err_code = (rej.get("error") or {}).get("code")
+            if err_code == _CC_SAME_CARRIER:
+                # Idempotent: already using this carrier
+                return {"number": number, "carrier": carrier_new}
+            msg = (
+                _CC_MESSAGES.get(int(err_code), f"changecarrier rejected (code {err_code})")
+                if isinstance(err_code, int)
+                else f"changecarrier rejected (code {err_code})"
+            )
+            raise ProviderError(msg)
+
+        raise ProviderError("changecarrier: number absent from accepted and rejected")

@@ -1,4 +1,5 @@
 """Tests for novatrack/providers — no real network calls, no API keys."""
+
 import hashlib
 import inspect
 
@@ -18,6 +19,7 @@ from novatrack.providers.track17 import (
 # ─────────────────────────────────────────────────────────────
 # normalize_status
 # ─────────────────────────────────────────────────────────────
+
 
 def test_normalize_pending_for_not_found():
     assert normalize_status("NotFound") == "pending"
@@ -110,6 +112,7 @@ def test_normalize_delivery_failure_with_sub_status():
 # Exact error code constants (authoritative v2.2 docs)
 # ─────────────────────────────────────────────────────────────
 
+
 def test_already_registered_code_is_18019901():
     """-18019901 = 'Tracking number already registered' per v2.2 spec.
 
@@ -138,6 +141,7 @@ def test_retrack_only_code_18019904_is_not_already_registered():
 # ─────────────────────────────────────────────────────────────
 # verify_signature
 # ─────────────────────────────────────────────────────────────
+
 
 def test_verify_signature_correct():
     body = b'{"event":"TRACKING_UPDATED"}'
@@ -187,6 +191,7 @@ def test_verify_signature_algorithm_is_sha256_body_slash_key():
 # MockTransport helpers
 # ─────────────────────────────────────────────────────────────
 
+
 def _make_transport(responses: list[dict]):
     queue = list(responses)
 
@@ -209,6 +214,7 @@ def _ok(accepted=None, rejected=None, **extra_data):
 # register
 # ─────────────────────────────────────────────────────────────
 
+
 def test_register_returns_accepted_item():
     p = _provider([_ok(accepted=[{"number": "TRACK123", "carrier": 100}])])
     result = p.register("TRACK123", 100)
@@ -227,7 +233,15 @@ def test_register_already_registered_is_idempotent():
 
     Previously -18019904 was used (wrong: that code means 'retrack only' not 'already registered').
     """
-    p = _provider([_ok(rejected=[{"number": "TRACK123", "error": {"code": -18019901, "message": "already registered"}}])])
+    p = _provider(
+        [
+            _ok(
+                rejected=[
+                    {"number": "TRACK123", "error": {"code": -18019901, "message": "already registered"}}
+                ]
+            )
+        ]
+    )
     result = p.register("TRACK123")
     assert result["number"] == "TRACK123"
 
@@ -347,7 +361,9 @@ def test_gettrackinfo_returns_accepted_item_with_track_info():
 
 
 def test_gettrackinfo_rejection_raises_provider_error():
-    p = _provider([_ok(rejected=[{"number": "TRACK123", "error": {"code": -18019902, "message": "not registered"}}])])
+    p = _provider(
+        [_ok(rejected=[{"number": "TRACK123", "error": {"code": -18019902, "message": "not registered"}}])]
+    )
     with pytest.raises(ProviderError):
         p.gettrackinfo("TRACK123")
 
@@ -362,6 +378,7 @@ def test_gettrackinfo_nonzero_code_raises_provider_error():
 # stoptrack
 # ─────────────────────────────────────────────────────────────
 
+
 def test_stoptrack_returns_accepted_item():
     p = _provider([_ok(accepted=[{"number": "TRACK123"}])])
     assert p.stoptrack("TRACK123")["number"] == "TRACK123"
@@ -372,12 +389,22 @@ def test_stoptrack_already_stopped_is_idempotent():
 
     Previously -18019910 was used (wrong: that code means 'Carrier Code incorrect').
     """
-    p = _provider([_ok(rejected=[{"number": "TRACK123", "error": {"code": -18019906, "message": "only tracked numbers"}}])])
+    p = _provider(
+        [
+            _ok(
+                rejected=[
+                    {"number": "TRACK123", "error": {"code": -18019906, "message": "only tracked numbers"}}
+                ]
+            )
+        ]
+    )
     assert p.stoptrack("TRACK123")["number"] == "TRACK123"
 
 
 def test_stoptrack_not_registered_is_idempotent():
-    p = _provider([_ok(rejected=[{"number": "TRACK123", "error": {"code": -18019902, "message": "not registered"}}])])
+    p = _provider(
+        [_ok(rejected=[{"number": "TRACK123", "error": {"code": -18019902, "message": "not registered"}}])]
+    )
     assert p.stoptrack("TRACK123")["number"] == "TRACK123"
 
 
@@ -389,7 +416,9 @@ def test_stoptrack_other_rejection_raises():
 
 def test_stoptrack_carrier_incorrect_raises_not_idempotent():
     """-18019910 ('Carrier Code incorrect') must raise ProviderError, not be idempotent."""
-    p = _provider([_ok(rejected=[{"number": "TRACK123", "error": {"code": -18019910, "message": "carrier incorrect"}}])])
+    p = _provider(
+        [_ok(rejected=[{"number": "TRACK123", "error": {"code": -18019910, "message": "carrier incorrect"}}])]
+    )
     with pytest.raises(ProviderError):
         p.stoptrack("TRACK123")
 
@@ -398,13 +427,16 @@ def test_stoptrack_carrier_incorrect_raises_not_idempotent():
 # deletetrack
 # ─────────────────────────────────────────────────────────────
 
+
 def test_deletetrack_returns_accepted_item():
     p = _provider([_ok(accepted=[{"number": "TRACK123"}])])
     assert p.deletetrack("TRACK123")["number"] == "TRACK123"
 
 
 def test_deletetrack_not_registered_is_idempotent():
-    p = _provider([_ok(rejected=[{"number": "TRACK123", "error": {"code": -18019902, "message": "not registered"}}])])
+    p = _provider(
+        [_ok(rejected=[{"number": "TRACK123", "error": {"code": -18019902, "message": "not registered"}}])]
+    )
     assert p.deletetrack("TRACK123")["number"] == "TRACK123"
 
 
@@ -417,6 +449,7 @@ def test_deletetrack_other_rejection_raises():
 # ─────────────────────────────────────────────────────────────
 # getquota
 # ─────────────────────────────────────────────────────────────
+
 
 def test_getquota_returns_quota_data():
     p = _provider([_ok(total=1000, used=100, remain=900)])
@@ -433,6 +466,7 @@ def test_getquota_nonzero_code_raises():
 # ─────────────────────────────────────────────────────────────
 # Protocol structural compliance
 # ─────────────────────────────────────────────────────────────
+
 
 def test_track17provider_has_all_protocol_methods():
     required = {"register", "gettrackinfo", "stoptrack", "deletetrack", "getquota"}

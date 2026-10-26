@@ -4,6 +4,7 @@
 All dependencies are injected; siblings (tracking, notifications) are imported
 directly — no lazy ImportError guards or _HAS stubs.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -34,6 +35,7 @@ from novatrack.auth import (
     oidc_login,
     validate_csrf,
 )
+from novatrack.carriers import search_carriers
 from novatrack.models import (
     ApiKey,
     AppSettings,
@@ -57,16 +59,16 @@ _HERE = Path(__file__).parent
 _TEMPLATES_DIR = _HERE / "templates"
 _STATIC_DIR = _HERE / "static"
 
-_MAX_WEBHOOK_BYTES = 1024 * 1024    # 1 MiB
-_DEFAULT_API_RATE_LIMIT = 120       # per minute per valid key
-_DEFAULT_INVALID_KEY_LIMIT = 30     # per minute per source IP (brute-force guard)
-_DEFAULT_WEBHOOK_RATE_LIMIT = 60    # per minute per source IP
+_MAX_WEBHOOK_BYTES = 1024 * 1024  # 1 MiB
+_DEFAULT_API_RATE_LIMIT = 120  # per minute per valid key
+_DEFAULT_INVALID_KEY_LIMIT = 30  # per minute per source IP (brute-force guard)
+_DEFAULT_WEBHOOK_RATE_LIMIT = 60  # per minute per source IP
 
 _NUMBER_RE = re.compile(r"^[A-Za-z0-9\-]{5,50}$")
 _SECRET_ENV_RE = re.compile(r"^NOVATRACK_WEBHOOK_SECRET_[A-Z0-9_]+$")
 _VALID_CHANNEL_KINDS = {"webhook", "telegram"}
 _VALID_EVENTS = {"status_changed", "delivered", "exception", "quota_low"}
-_PG_INT_MAX = 2**31 - 1   # 2 147 483 647
+_PG_INT_MAX = 2**31 - 1  # 2 147 483 647
 
 
 # ---------------------------------------------------------------------------
@@ -76,21 +78,80 @@ _PG_INT_MAX = 2**31 - 1   # 2 147 483 647
 
 class CreateShipmentRequest(BaseModel):
     number: str = Field(..., description="Tracking number (5-50 alphanumeric/hyphen)")
-    carrier: int | None = Field(
-        None, gt=0, le=_PG_INT_MAX, description="17TRACK numeric carrier code"
-    )
+    carrier: int | None = Field(None, gt=0, le=_PG_INT_MAX, description="17TRACK numeric carrier code")
     name: str = Field("", max_length=200, description="Human label")
     store: str = Field("", max_length=200, description="Store or marketplace")
     notes: str = Field("", max_length=2000, description="Free-form notes")
+    destination_country: str | None = Field(
+        None, min_length=2, max_length=2, description="Destination country ISO alpha-2"
+    )
+    destination_postal_code: str | None = Field(None, max_length=20, description="Destination postal code")
+    phone_number_last_4: str | None = Field(
+        None, max_length=10, description="Last 4 digits of recipient phone"
+    )
 
     @field_validator("number")
     @classmethod
     def validate_number(cls, v: str) -> str:
         if not _NUMBER_RE.match(v):
-            raise ValueError(
-                "Tracking number must be 5-50 alphanumeric/hyphen characters"
-            )
+            raise ValueError("Tracking number must be 5-50 alphanumeric/hyphen characters")
         return v  # preserve exact case - no normalisation
+
+    @field_validator("destination_country")
+    @classmethod
+    def validate_destination_country(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip().upper()
+        if not v.isalpha() or len(v) != 2:
+            raise ValueError("destination_country must be a 2-letter ISO alpha-2 code")
+        return v
+
+    @field_validator("phone_number_last_4")
+    @classmethod
+    def validate_phone_last_4(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if v and not v.isdigit():
+            raise ValueError("phone_number_last_4 must contain only digits")
+        return v or None
+
+
+class ChangeCarrierRequest(BaseModel):
+    carrier: int = Field(..., gt=0, le=_PG_INT_MAX, description="New 17TRACK numeric carrier code")
+
+
+class UpdateShipmentParamsRequest(BaseModel):
+    """Partial update: update additional tracking params and trigger a retry."""
+
+    destination_country: str | None = Field(
+        None, min_length=2, max_length=2, description="Destination country ISO alpha-2"
+    )
+    destination_postal_code: str | None = Field(None, max_length=20, description="Destination postal code")
+    phone_number_last_4: str | None = Field(
+        None, max_length=10, description="Last 4 digits of recipient phone"
+    )
+
+    @field_validator("destination_country")
+    @classmethod
+    def validate_destination_country(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip().upper()
+        if not v.isalpha() or len(v) != 2:
+            raise ValueError("destination_country must be a 2-letter ISO alpha-2 code")
+        return v
+
+    @field_validator("phone_number_last_4")
+    @classmethod
+    def validate_phone_last_4(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if v and not v.isdigit():
+            raise ValueError("phone_number_last_4 must contain only digits")
+        return v or None
 
 
 class ShipmentResponse(BaseModel):
@@ -107,6 +168,9 @@ class ShipmentResponse(BaseModel):
     created_at: str
     updated_at: str
     provider_error: str | None
+    destination_country: str | None
+    destination_postal_code: str | None
+    phone_number_last_4: str | None
 
     @classmethod
     def from_orm(cls, s: Shipment) -> "ShipmentResponse":
@@ -124,6 +188,9 @@ class ShipmentResponse(BaseModel):
             created_at=s.created_at.isoformat() if s.created_at else "",
             updated_at=s.updated_at.isoformat() if s.updated_at else "",
             provider_error=s.provider_error,
+            destination_country=s.destination_country,
+            destination_postal_code=s.destination_postal_code,
+            phone_number_last_4=s.phone_number_last_4,
         )
 
 
@@ -146,9 +213,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 # /static/auth.css must be public so the unauthenticated login page loads its CSS.
 # ALL other /static/* assets require a session.
-_AUTH_EXEMPT_EXACT = frozenset(
-    {"/healthz", "/auth/login", "/auth/callback", "/static/auth.css"}
-)
+_AUTH_EXEMPT_EXACT = frozenset({"/healthz", "/auth/login", "/auth/callback", "/static/auth.css"})
 _API_PREFIX = "/api/"
 _WEBHOOK_PATH = "/webhooks/17track"
 
@@ -173,9 +238,7 @@ class AuthEnforcementMiddleware(BaseHTTPMiddleware):
         if not user or not user.get("sub"):
             accept = request.headers.get("Accept", "")
             if "application/json" in accept:
-                return JSONResponse(
-                    {"detail": "Authentication required"}, status_code=401
-                )
+                return JSONResponse({"detail": "Authentication required"}, status_code=401)
             return RedirectResponse(url="/auth/login", status_code=302)
 
         return await call_next(request)
@@ -234,10 +297,14 @@ def _require_api_key(request: Request, db: Session = Depends(_db_session)):
             detail="Rate limit exceeded",
         )
 
-    key_row: ApiKey | None = db.query(ApiKey).filter(
-        ApiKey.digest == digest,
-        ApiKey.revoked_at.is_(None),
-    ).first()
+    key_row: ApiKey | None = (
+        db.query(ApiKey)
+        .filter(
+            ApiKey.digest == digest,
+            ApiKey.revoked_at.is_(None),
+        )
+        .first()
+    )
     if not key_row:
         invalid_limiter.is_allowed(ip_hash)  # consume one invalid-IP token
         raise HTTPException(
@@ -263,15 +330,18 @@ def create_app(
 
     if settings is None:
         from novatrack.config import Settings
+
         settings = Settings()  # type: ignore[call-arg]
 
     if session_factory is None:
         from novatrack.db import make_engine, make_session_factory
+
         engine = make_engine(settings.database_url)
         session_factory = make_session_factory(engine)
 
     if provider is None:
         from novatrack.providers.track17 import Track17Provider
+
         provider = Track17Provider(api_key=settings.track17_api_key.get_secret_value())
 
     # Per-app OAuth instance - never a module-level singleton
@@ -279,7 +349,7 @@ def create_app(
 
     app = FastAPI(
         title="NovaTrack",
-        version="0.1.1",
+        version="0.1.2",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
@@ -288,7 +358,7 @@ def create_app(
     app.state.settings = settings
     app.state.session_factory = session_factory
     app.state.provider = provider
-    app.state.oauth = oauth          # test seam: app.state.oauth.create_client("oidc")
+    app.state.oauth = oauth  # test seam: app.state.oauth.create_client("oidc")
     app.state.api_limiter = RateLimiter(_DEFAULT_API_RATE_LIMIT, 60)
     app.state.invalid_key_limiter = RateLimiter(_DEFAULT_INVALID_KEY_LIMIT, 60)
     app.state.webhook_limiter = RateLimiter(_DEFAULT_WEBHOOK_RATE_LIMIT, 60)
@@ -303,7 +373,7 @@ def create_app(
         session_cookie="novatrack_session",
         same_site="lax",
         https_only=True,
-        max_age=8 * 3600,   # 8 hours, not 14 days
+        max_age=8 * 3600,  # 8 hours, not 14 days
     )
     app.add_middleware(SecurityHeadersMiddleware)
 
@@ -334,11 +404,7 @@ def create_app(
         """Load full settings page DB context (channels, api_keys, app_cfg)."""
         with sf() as s:
             app_cfg = s.get(AppSettings, 1)
-            channels = (
-                s.query(NotificationChannel)
-                .order_by(NotificationChannel.name)
-                .all()
-            )
+            channels = s.query(NotificationChannel).order_by(NotificationChannel.name).all()
             api_keys = s.query(ApiKey).filter(ApiKey.revoked_at.is_(None)).all()
         return {"app_cfg": app_cfg, "channels": channels, "api_keys": api_keys}
 
@@ -469,9 +535,7 @@ def create_app(
         except (json.JSONDecodeError, ValueError):
             return JSONResponse({"detail": "Invalid JSON"}, status_code=400)
         if not isinstance(payload, dict):
-            return JSONResponse(
-                {"detail": "Payload must be a JSON object"}, status_code=400
-            )
+            return JSONResponse({"detail": "Payload must be a JSON object"}, status_code=400)
 
         # 6. Transactional apply
         raw_digest = hashlib.sha256(raw_body).hexdigest()
@@ -482,9 +546,7 @@ def create_app(
                 applied = tracking.apply_webhook(session, payload, raw_digest)
                 session.commit()
         except ValueError:
-            return JSONResponse(
-                {"detail": "Malformed webhook payload"}, status_code=400
-            )
+            return JSONResponse({"detail": "Malformed webhook payload"}, status_code=400)
         except Exception:
             logger.error("Webhook processing failed - DB unavailable")
             return JSONResponse(
@@ -522,12 +584,14 @@ def create_app(
                 .limit(per_page)
                 .all()
             )
-        return JSONResponse({
-            "items": [ShipmentResponse.from_orm(r).model_dump() for r in rows],
-            "total": total,
-            "page": page,
-            "per_page": per_page,
-        })
+        return JSONResponse(
+            {
+                "items": [ShipmentResponse.from_orm(r).model_dump() for r in rows],
+                "total": total,
+                "page": page,
+                "per_page": per_page,
+            }
+        )
 
     @api.post("/shipments", status_code=201)
     def create_shipment_api(
@@ -540,12 +604,16 @@ def create_app(
         with sf() as session:
             try:
                 ship = tracking.create_shipment(
-                    session, prov,
+                    session,
+                    prov,
                     number=body.number,
                     carrier=body.carrier,
                     name=body.name,
                     store=body.store,
                     notes=body.notes,
+                    destination_country=body.destination_country,
+                    destination_postal_code=body.destination_postal_code,
+                    phone_number_last_4=body.phone_number_last_4,
                 )
                 session.commit()
                 try:
@@ -586,6 +654,83 @@ def create_app(
         data = ShipmentResponse.from_orm(ship).model_dump()
         data["events"] = events_data
         return JSONResponse(data)
+
+    @api.get("/carriers")
+    def list_carriers_api(
+        q: str = "",
+        limit: int = 40,
+        _key: ApiKey = Depends(_require_api_key),
+    ) -> JSONResponse:
+        """Search the offline carrier catalogue (returns key + name)."""
+        limit = min(max(1, limit), 200)
+        results = search_carriers(q, limit=limit)
+        return JSONResponse({"items": results, "count": len(results)})
+
+    @api.post("/shipments/{shipment_id}/carrier", status_code=200)
+    def change_carrier_api(
+        shipment_id: str,
+        body: ChangeCarrierRequest,
+        request: Request,
+        _key: ApiKey = Depends(_require_api_key),
+    ) -> JSONResponse:
+        """Change the carrier for a registered shipment (costs one quota)."""
+        sf = request.app.state.session_factory
+        prov = request.app.state.provider
+        with sf() as s:
+            ship = s.get(Shipment, shipment_id)
+            if not ship:
+                raise HTTPException(status_code=404, detail="Shipment not found")
+            if not ship.registered:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Shipment must be registered before changing carrier",
+                )
+            try:
+                tracking.change_carrier_shipment(s, ship, prov, body.carrier)
+                s.commit()
+                try:
+                    s.refresh(ship)
+                except Exception:
+                    pass
+            except ProviderError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return JSONResponse(ShipmentResponse.from_orm(ship).model_dump())
+
+    @api.post("/shipments/{shipment_id}/params", status_code=200)
+    def update_shipment_params_api(
+        shipment_id: str,
+        body: UpdateShipmentParamsRequest,
+        request: Request,
+        _key: ApiKey = Depends(_require_api_key),
+    ) -> JSONResponse:
+        """Update additional tracking parameters and trigger a registration retry.
+
+        Sets ``destination_country``, ``destination_postal_code``, and/or
+        ``phone_number_last_4`` on the shipment, then resets any pending
+        register operation's ``next_attempt_at`` to now so the worker retries
+        immediately on the next tick.
+
+        Use this endpoint after a registration fails with -18010018/-18010019
+        (missing or invalid additional parameter).
+        """
+        sf = request.app.state.session_factory
+        with sf() as s:
+            ship = s.get(Shipment, shipment_id)
+            if not ship:
+                raise HTTPException(status_code=404, detail="Shipment not found")
+            tracking.update_shipment_params(
+                s,
+                ship,
+                destination_country=body.destination_country,
+                destination_postal_code=body.destination_postal_code,
+                phone_number_last_4=body.phone_number_last_4,
+            )
+            s.commit()
+            try:
+                s.refresh(ship)
+            except Exception:
+                pass
+        return JSONResponse(ShipmentResponse.from_orm(ship).model_dump())
 
     @api.post("/shipments/{shipment_id}/archive", status_code=200)
     def archive_shipment_api(
@@ -643,10 +788,12 @@ def create_app(
         if app.openapi_schema:
             return app.openapi_schema
         schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
-        schema.setdefault("components", {}).setdefault("securitySchemes", {}).update({
-            "ApiKeyHeader": {"type": "apiKey", "in": "header", "name": "X-API-Key"},
-            "BearerToken": {"type": "http", "scheme": "bearer"},
-        })
+        schema.setdefault("components", {}).setdefault("securitySchemes", {}).update(
+            {
+                "ApiKeyHeader": {"type": "apiKey", "in": "header", "name": "X-API-Key"},
+                "BearerToken": {"type": "http", "scheme": "bearer"},
+            }
+        )
         security_block = [{"ApiKeyHeader": []}, {"BearerToken": []}]
         for path_str, path_item in schema.get("paths", {}).items():
             if path_str.startswith("/api/v1/"):
@@ -674,11 +821,15 @@ def create_app(
                 .limit(200)
                 .all()
             )
-        return _render("index.html", request, {
-            "user": user,
-            "shipments": shipments,
-            **_csrf_ctx(request),
-        })
+        return _render(
+            "index.html",
+            request,
+            {
+                "user": user,
+                "shipments": shipments,
+                **_csrf_ctx(request),
+            },
+        )
 
     @app.post("/shipments")
     async def create_shipment_ui(request: Request) -> Response:
@@ -691,13 +842,62 @@ def create_app(
         store_val = str(form.get("store", "")).strip()[:200]
         notes_val = str(form.get("notes", "")).strip()[:2000]
 
+        sf = request.app.state.session_factory
+
+        # Validate destination_country: must be exactly 2 alpha chars (not silently truncated)
+        dest_country_raw = str(form.get("destination_country", "")).strip().upper()
+        if dest_country_raw and (len(dest_country_raw) != 2 or not dest_country_raw.isalpha()):
+            with sf() as s:
+                shipments = (
+                    s.query(Shipment)
+                    .filter(Shipment.bucket == "active")
+                    .order_by(Shipment.updated_at.desc())
+                    .limit(200)
+                    .all()
+                )
+            return _render(
+                "index.html",
+                request,
+                {
+                    "user": get_current_user(request),
+                    "shipments": shipments,
+                    "form_error": "Destination country must be a 2-letter ISO alpha-2 code (e.g. ES, NL).",
+                    **_csrf_ctx(request),
+                },
+            )
+        dest_country: str | None = dest_country_raw or None
+
+        dest_postal = str(form.get("destination_postal_code", "")).strip()[:20] or None
+
+        # Validate phone_number_last_4: must be digits only (not silently truncated)
+        phone_last4_raw = str(form.get("phone_number_last_4", "")).strip()
+        if phone_last4_raw and not phone_last4_raw.isdigit():
+            with sf() as s:
+                shipments = (
+                    s.query(Shipment)
+                    .filter(Shipment.bucket == "active")
+                    .order_by(Shipment.updated_at.desc())
+                    .limit(200)
+                    .all()
+                )
+            return _render(
+                "index.html",
+                request,
+                {
+                    "user": get_current_user(request),
+                    "shipments": shipments,
+                    "form_error": "Phone (last 4) must contain only digits.",
+                    **_csrf_ctx(request),
+                },
+            )
+        phone_last4: str | None = phone_last4_raw[:10] or None
+
         carrier: int | None = None
         if carrier_raw and carrier_raw.isdigit():
             carrier_int = int(carrier_raw)
             if 1 <= carrier_int <= _PG_INT_MAX:
                 carrier = carrier_int
 
-        sf = request.app.state.session_factory
         if not number or not _NUMBER_RE.match(number):
             with sf() as s:
                 shipments = (
@@ -707,23 +907,31 @@ def create_app(
                     .limit(200)
                     .all()
                 )
-            return _render("index.html", request, {
-                "user": get_current_user(request),
-                "shipments": shipments,
-                "form_error": "Invalid tracking number - 5-50 alphanumeric/hyphen characters.",
-                **_csrf_ctx(request),
-            })
+            return _render(
+                "index.html",
+                request,
+                {
+                    "user": get_current_user(request),
+                    "shipments": shipments,
+                    "form_error": "Invalid tracking number - 5-50 alphanumeric/hyphen characters.",
+                    **_csrf_ctx(request),
+                },
+            )
 
         prov = request.app.state.provider
         try:
             with sf() as session:
                 tracking.create_shipment(
-                    session, prov,
+                    session,
+                    prov,
                     number=number,
                     carrier=carrier,
                     name=name,
                     store=store_val,
                     notes=notes_val,
+                    destination_country=dest_country,
+                    destination_postal_code=dest_postal,
+                    phone_number_last_4=phone_last4,
                 )
                 session.commit()
         except ValueError as exc:
@@ -735,12 +943,16 @@ def create_app(
                     .limit(200)
                     .all()
                 )
-            return _render("index.html", request, {
-                "user": get_current_user(request),
-                "shipments": shipments,
-                "form_error": str(exc),
-                **_csrf_ctx(request),
-            })
+            return _render(
+                "index.html",
+                request,
+                {
+                    "user": get_current_user(request),
+                    "shipments": shipments,
+                    "form_error": str(exc),
+                    **_csrf_ctx(request),
+                },
+            )
 
         return RedirectResponse("/", status_code=303)
 
@@ -756,9 +968,15 @@ def create_app(
                 .limit(200)
                 .all()
             )
-        return _render("archive.html", request, {
-            "user": user, "shipments": shipments, **_csrf_ctx(request),
-        })
+        return _render(
+            "archive.html",
+            request,
+            {
+                "user": user,
+                "shipments": shipments,
+                **_csrf_ctx(request),
+            },
+        )
 
     @app.get("/trash")
     def trash_view(request: Request) -> HTMLResponse:
@@ -772,9 +990,15 @@ def create_app(
                 .limit(200)
                 .all()
             )
-        return _render("trash.html", request, {
-            "user": user, "shipments": shipments, **_csrf_ctx(request),
-        })
+        return _render(
+            "trash.html",
+            request,
+            {
+                "user": user,
+                "shipments": shipments,
+                **_csrf_ctx(request),
+            },
+        )
 
     @app.get("/shipments/{shipment_id}")
     def shipment_detail(shipment_id: str, request: Request) -> HTMLResponse:
@@ -798,13 +1022,33 @@ def create_app(
                 .all()
             )
 
-        return _render("shipment.html", request, {
-            "user": user,
-            "shipment": ship,
-            "events": events,
-            "tz": tz,
-            **_csrf_ctx(request),
-        })
+        # Flash messages via query param
+        _FLASH_MESSAGES: dict[str, str] = {
+            "not_registered": (
+                "Refresh skipped — shipment is not yet registered with the carrier. "
+                "Registration happens automatically; check back shortly."
+            ),
+            "carrier_changed": "Carrier updated successfully.",
+            "carrier_error": "Carrier change failed — see the error detail below.",
+            "invalid_carrier": "Invalid carrier code — please enter a positive integer.",
+            "params_updated": ("Tracking parameters updated. Registration will be retried automatically."),
+            "invalid_country": "Destination country must be a 2-letter ISO alpha-2 code (e.g. ES, NL).",
+            "invalid_phone": "Phone (last 4) must contain only digits.",
+        }
+        flash_msg = _FLASH_MESSAGES.get(request.query_params.get("msg", ""))
+
+        return _render(
+            "shipment.html",
+            request,
+            {
+                "user": user,
+                "shipment": ship,
+                "events": events,
+                "tz": tz,
+                "flash_msg": flash_msg,
+                **_csrf_ctx(request),
+            },
+        )
 
     @app.post("/shipments/{shipment_id}/refresh")
     async def refresh_shipment_ui(shipment_id: str, request: Request) -> Response:
@@ -817,15 +1061,14 @@ def create_app(
             ship = s.get(Shipment, shipment_id)
             if not ship:
                 raise HTTPException(status_code=404, detail="Shipment not found")
-            # Refuse to refresh TBA/untrackable or unregistered
+            # Refuse to refresh TBA/untrackable
             if ship.status == "untrackable":
-                raise HTTPException(
-                    status_code=400, detail="Cannot refresh untrackable shipment"
-                )
+                raise HTTPException(status_code=400, detail="Cannot refresh untrackable shipment")
             if not ship.registered:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Shipment not yet registered with provider",
+                # HTML: redirect with informational message instead of 400
+                return RedirectResponse(
+                    f"/shipments/{shipment_id}?msg=not_registered",
+                    status_code=303,
                 )
             try:
                 tracking.refresh_shipment(s, ship, prov)
@@ -835,6 +1078,83 @@ def create_app(
                 s.commit()
 
         return RedirectResponse(f"/shipments/{shipment_id}", status_code=303)
+
+    @app.post("/shipments/{shipment_id}/params")
+    async def update_shipment_params_ui(shipment_id: str, request: Request) -> Response:
+        """Update additional tracking params and trigger a registration retry."""
+        form = await request.form()
+        validate_csrf(request, form.get("_csrf"))
+
+        # Validate destination_country: must be exactly 2 alpha chars
+        dest_country_raw = str(form.get("destination_country", "")).strip().upper()
+        if dest_country_raw and (len(dest_country_raw) != 2 or not dest_country_raw.isalpha()):
+            return RedirectResponse(f"/shipments/{shipment_id}?msg=invalid_country", status_code=303)
+        dest_country: str | None = dest_country_raw or None
+
+        dest_postal: str | None = str(form.get("destination_postal_code", "")).strip()[:20] or None
+
+        # Validate phone_number_last_4: digits only
+        phone_last4_raw = str(form.get("phone_number_last_4", "")).strip()
+        if phone_last4_raw and not phone_last4_raw.isdigit():
+            return RedirectResponse(f"/shipments/{shipment_id}?msg=invalid_phone", status_code=303)
+        phone_last4: str | None = phone_last4_raw[:10] or None
+
+        sf = request.app.state.session_factory
+        with sf() as s:
+            ship = s.get(Shipment, shipment_id)
+            if not ship:
+                raise HTTPException(status_code=404, detail="Shipment not found")
+            tracking.update_shipment_params(
+                s,
+                ship,
+                destination_country=dest_country,
+                destination_postal_code=dest_postal,
+                phone_number_last_4=phone_last4,
+            )
+            s.commit()
+
+        return RedirectResponse(f"/shipments/{shipment_id}?msg=params_updated", status_code=303)
+
+    @app.post("/shipments/{shipment_id}/carrier")
+    async def change_carrier_ui(shipment_id: str, request: Request) -> Response:
+        form = await request.form()
+        validate_csrf(request, form.get("_csrf"))
+        carrier_raw = str(form.get("carrier", "")).strip()
+
+        carrier_int: int | None = None
+        if carrier_raw and carrier_raw.isdigit():
+            v = int(carrier_raw)
+            if 1 <= v <= _PG_INT_MAX:
+                carrier_int = v
+
+        if carrier_int is None:
+            return RedirectResponse(
+                f"/shipments/{shipment_id}?msg=invalid_carrier",
+                status_code=303,
+            )
+
+        sf = request.app.state.session_factory
+        prov = request.app.state.provider
+        with sf() as s:
+            ship = s.get(Shipment, shipment_id)
+            if not ship:
+                raise HTTPException(status_code=404, detail="Shipment not found")
+            if not ship.registered:
+                return RedirectResponse(
+                    f"/shipments/{shipment_id}?msg=not_registered",
+                    status_code=303,
+                )
+            try:
+                tracking.change_carrier_shipment(s, ship, prov, carrier_int)
+                s.commit()
+            except ProviderError as exc:
+                ship.provider_error = str(exc)[:200]
+                s.commit()
+                return RedirectResponse(
+                    f"/shipments/{shipment_id}?msg=carrier_error",
+                    status_code=303,
+                )
+        return RedirectResponse(f"/shipments/{shipment_id}?msg=carrier_changed", status_code=303)
 
     @app.post("/shipments/{shipment_id}/archive")
     async def archive_shipment_ui(shipment_id: str, request: Request) -> Response:
@@ -900,21 +1220,21 @@ def create_app(
 
         with sf() as s:
             app_cfg = s.get(AppSettings, 1)
-            channels = (
-                s.query(NotificationChannel)
-                .order_by(NotificationChannel.name)
-                .all()
-            )
+            channels = s.query(NotificationChannel).order_by(NotificationChannel.name).all()
             api_keys = s.query(ApiKey).filter(ApiKey.revoked_at.is_(None)).all()
 
-        return _render("settings.html", request, {
-            "user": user,
-            "app_cfg": app_cfg,
-            "channels": channels,
-            "api_keys": api_keys,
-            "telegram_available": _telegram_available(app_settings),
-            **_csrf_ctx(request),
-        })
+        return _render(
+            "settings.html",
+            request,
+            {
+                "user": user,
+                "app_cfg": app_cfg,
+                "channels": channels,
+                "api_keys": api_keys,
+                "telegram_available": _telegram_available(app_settings),
+                **_csrf_ctx(request),
+            },
+        )
 
     @app.post("/settings/retention")
     async def settings_retention(request: Request) -> Response:
@@ -928,13 +1248,9 @@ def create_app(
             raise HTTPException(status_code=400, detail="Days must be integers")
 
         if not (1 <= archive_days <= 3650):
-            raise HTTPException(
-                status_code=400, detail="archive_days must be between 1 and 3650"
-            )
+            raise HTTPException(status_code=400, detail="archive_days must be between 1 and 3650")
         if not (1 <= purge_days <= 3650):
-            raise HTTPException(
-                status_code=400, detail="purge_days must be between 1 and 3650"
-            )
+            raise HTTPException(status_code=400, detail="purge_days must be between 1 and 3650")
 
         sf = request.app.state.session_factory
         with sf() as s:
@@ -963,13 +1279,17 @@ def create_app(
                 s.commit()
         except Exception:
             logger.error("Quota check failed")
-            return _render("settings.html", request, {
-                "user": get_current_user(request),
-                "quota_error": "Quota check failed - check provider configuration.",
-                "telegram_available": _telegram_available(app_settings),
-                **_full_settings_ctx(sf),
-                **_csrf_ctx(request),
-            })
+            return _render(
+                "settings.html",
+                request,
+                {
+                    "user": get_current_user(request),
+                    "quota_error": "Quota check failed - check provider configuration.",
+                    "telegram_available": _telegram_available(app_settings),
+                    **_full_settings_ctx(sf),
+                    **_csrf_ctx(request),
+                },
+            )
 
         return RedirectResponse("/settings", status_code=303)
 
@@ -987,14 +1307,18 @@ def create_app(
             s.commit()
         app_settings = request.app.state.settings
         # Return full settings context so no sections appear blank
-        return _render("settings.html", request, {
-            "user": get_current_user(request),
-            "new_api_key": raw,
-            "new_api_key_name": key_name,
-            "telegram_available": _telegram_available(app_settings),
-            **_full_settings_ctx(sf),
-            **_csrf_ctx(request),
-        })
+        return _render(
+            "settings.html",
+            request,
+            {
+                "user": get_current_user(request),
+                "new_api_key": raw,
+                "new_api_key_name": key_name,
+                "telegram_available": _telegram_available(app_settings),
+                **_full_settings_ctx(sf),
+                **_csrf_ctx(request),
+            },
+        )
 
     @app.post("/settings/api-keys/{key_id}/revoke")
     async def revoke_api_key_route(key_id: str, request: Request) -> Response:
@@ -1028,15 +1352,11 @@ def create_app(
                 detail=f"kind must be one of: {', '.join(sorted(_VALID_CHANNEL_KINDS))}",
             )
         if not events:
-            raise HTTPException(
-                status_code=400, detail="At least one event must be selected"
-            )
+            raise HTTPException(status_code=400, detail="At least one event must be selected")
 
         if kind == "telegram":
             if url:
-                raise HTTPException(
-                    status_code=400, detail="Telegram channels do not use webhook URLs"
-                )
+                raise HTTPException(status_code=400, detail="Telegram channels do not use webhook URLs")
             if secret_env:
                 raise HTTPException(
                     status_code=400,
@@ -1053,9 +1373,7 @@ def create_app(
                 )
         else:  # webhook
             if not url:
-                raise HTTPException(
-                    status_code=400, detail="Webhook channels require a URL"
-                )
+                raise HTTPException(status_code=400, detail="Webhook channels require a URL")
             if secret_env and not _SECRET_ENV_RE.match(secret_env):
                 raise HTTPException(
                     status_code=400,
@@ -1088,12 +1406,16 @@ def create_app(
             ch = s.get(NotificationChannel, ch_id)
         if not ch:
             raise HTTPException(status_code=404, detail="Channel not found")
-        return _render("settings_channel_edit.html", request, {
-            "user": user,
-            "channel": ch,
-            "valid_events": sorted(_VALID_EVENTS),
-            **_csrf_ctx(request),
-        })
+        return _render(
+            "settings_channel_edit.html",
+            request,
+            {
+                "user": user,
+                "channel": ch,
+                "valid_events": sorted(_VALID_EVENTS),
+                **_csrf_ctx(request),
+            },
+        )
 
     @app.post("/settings/channels/{ch_id}/edit")
     async def edit_channel_save(ch_id: str, request: Request) -> Response:
@@ -1106,9 +1428,7 @@ def create_app(
         events = [e for e in events_raw if e in _VALID_EVENTS]
 
         if not events:
-            raise HTTPException(
-                status_code=400, detail="At least one event must be selected"
-            )
+            raise HTTPException(status_code=400, detail="At least one event must be selected")
 
         sf = request.app.state.session_factory
         with sf() as s:
@@ -1118,9 +1438,7 @@ def create_app(
 
             if ch.kind == "webhook":
                 if not url:
-                    raise HTTPException(
-                        status_code=400, detail="Webhook channels require a URL"
-                    )
+                    raise HTTPException(status_code=400, detail="Webhook channels require a URL")
                 if secret_env and not _SECRET_ENV_RE.match(secret_env):
                     raise HTTPException(
                         status_code=400,
@@ -1191,7 +1509,10 @@ _SELF_HOSTED_DOCS_HTML = """<!DOCTYPE html>
   <code>GET /api/v1/shipments</code> &middot;
   <code>POST /api/v1/shipments</code> &middot;
   <code>GET /api/v1/shipments/{id}</code> &middot;
-  <code>POST /api/v1/shipments/{id}/archive</code>
+  <code>POST /api/v1/shipments/{id}/params</code> &middot;
+  <code>POST /api/v1/shipments/{id}/archive</code> &middot;
+  <code>POST /api/v1/shipments/{id}/carrier</code> &middot;
+  <code>GET /api/v1/carriers</code>
 </p>
 </div>
 </body>

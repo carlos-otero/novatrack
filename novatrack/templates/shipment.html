@@ -8,10 +8,15 @@
     <span class="badge badge-{{ shipment.status | e }}">
       {{ shipment.status | e | replace('_', ' ') | title }}
     </span>
+    {% if shipment.carrier %}<span class="badge badge-carrier">Carrier {{ shipment.carrier }}</span>{% endif %}
   </div>
   {% if shipment.name %}<p class="detail-label">{{ shipment.name | e }}</p>{% endif %}
   {% if shipment.store %}<p class="detail-store">{{ shipment.store | e }}</p>{% endif %}
 </div>
+
+{% if flash_msg %}
+<div class="alert alert-info" role="alert">{{ flash_msg | e }}</div>
+{% endif %}
 
 {% if shipment.provider_error %}
 <div class="alert alert-error" role="alert">
@@ -34,10 +39,17 @@
   <h3 class="section-title">Actions</h3>
   <div class="action-row">
     {% if shipment.bucket == 'active' %}
+    {% if shipment.registered %}
     <form action="/shipments/{{ shipment.id | e }}/refresh" method="post" class="inline-form">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}">
       <button type="submit" class="btn btn-secondary">Refresh</button>
     </form>
+    {% else %}
+    <span class="field-hint">Registration pending — Refresh available once registered.</span>
+    {% endif %}
+    {% if shipment.registered and shipment.status not in ['delivered', 'untrackable'] %}
+    <button class="btn btn-secondary" data-modal-open="change-carrier-modal">Change Carrier</button>
+    {% endif %}
     <form action="/shipments/{{ shipment.id | e }}/archive" method="post" class="inline-form">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}">
       <button type="submit" class="btn btn-ghost">Archive</button>
@@ -71,6 +83,51 @@
 </div>
 {% endif %}
 
+{% if shipment.destination_country or shipment.destination_postal_code or shipment.phone_number_last_4 %}
+<div class="detail-section">
+  <h3 class="section-title">Additional Tracking Info</h3>
+  <dl class="detail-list">
+    {% if shipment.destination_country %}
+    <dt>Destination Country</dt><dd>{{ shipment.destination_country | e }}</dd>
+    {% endif %}
+    {% if shipment.destination_postal_code %}
+    <dt>Postal Code</dt><dd>{{ shipment.destination_postal_code | e }}</dd>
+    {% endif %}
+    {% if shipment.phone_number_last_4 %}
+    <dt>Phone (last 4)</dt><dd>{{ shipment.phone_number_last_4 | e }}</dd>
+    {% endif %}
+  </dl>
+</div>
+{% endif %}
+
+{% if not shipment.registered and shipment.bucket == 'active' %}
+<div class="detail-section">
+  <h3 class="section-title">Update Tracking Parameters</h3>
+  <p class="field-hint">
+    Some carriers require additional information to complete registration.
+    Fill in the missing fields below, then save to trigger a retry.
+  </p>
+  <form action="/shipments/{{ shipment.id | e }}/params" method="post" class="form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <label class="field-label" for="p-country">Destination Country (ISO alpha-2)</label>
+    <input id="p-country" name="destination_country" type="text" class="field-input"
+           maxlength="2" placeholder="e.g. ES"
+           value="{{ shipment.destination_country | e if shipment.destination_country else '' }}">
+    <label class="field-label" for="p-postal">Destination Postal Code</label>
+    <input id="p-postal" name="destination_postal_code" type="text" class="field-input"
+           maxlength="20" placeholder="e.g. 28001"
+           value="{{ shipment.destination_postal_code | e if shipment.destination_postal_code else '' }}">
+    <label class="field-label" for="p-phone">Last 4 Digits of Recipient Phone</label>
+    <input id="p-phone" name="phone_number_last_4" type="text" class="field-input"
+           maxlength="10" placeholder="e.g. 1234"
+           value="{{ shipment.phone_number_last_4 | e if shipment.phone_number_last_4 else '' }}">
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Save &amp; Retry Registration</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
 {% if events %}
 <div class="detail-section">
   <h3 class="section-title">Tracking History</h3>
@@ -93,6 +150,34 @@
   {% endfor %}
   </ol>
 </div>
+{% endif %}
+
+{% if shipment.registered and shipment.status not in ['delivered', 'untrackable'] and shipment.bucket == 'active' %}
+<!-- Change Carrier Modal -->
+<dialog id="change-carrier-modal" class="modal">
+  <div class="modal-box">
+    <h3 class="modal-title">Change Carrier</h3>
+    <div class="alert alert-warn" role="note">
+      ⚠ Changing the carrier will consume one tracking quota slot.
+    </div>
+    <form action="/shipments/{{ shipment.id | e }}/carrier" method="post" class="form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <label class="field-label" for="cc-search">Search Carrier</label>
+      <input id="cc-search" type="text" class="field-input" placeholder="Type carrier name…"
+             autocomplete="off" data-carrier-search="cc-carrier">
+      <span class="field-hint">Start typing to search, or enter the numeric code directly below.</span>
+      <label class="field-label" for="cc-carrier">Carrier Code <span class="req">*</span></label>
+      <input id="cc-carrier" name="carrier" type="number" class="field-input"
+             min="1" max="2147483647" required placeholder="e.g. 100001"
+             value="{{ shipment.carrier if shipment.carrier else '' }}">
+      <div id="cc-results" class="carrier-results" aria-live="polite"></div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-ghost" data-modal-close="change-carrier-modal">Cancel</button>
+        <button type="submit" class="btn btn-primary">Change Carrier</button>
+      </div>
+    </form>
+  </div>
+</dialog>
 {% endif %}
 
 {% endblock %}

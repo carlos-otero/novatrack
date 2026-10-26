@@ -24,22 +24,30 @@
              autocomplete="off">
       <span class="field-hint">5-50 alphanumeric characters or hyphens. Case is preserved.</span>
 
-      <label class="field-label" for="carrier">Carrier (optional)</label>
-      <select id="carrier" name="carrier" class="field-input">
-        <option value="">— auto-detect —</option>
-        <option value="100001">100001 — DHL Express</option>
-        <option value="100002">100002 — FedEx</option>
-        <option value="100003">100003 — UPS</option>
-        <option value="21051">21051 — USPS</option>
-        <option value="3011">3011 — Royal Mail</option>
-        <option value="190105">190105 — La Poste (FR)</option>
-        <option value="100171">100171 — Amazon Logistics</option>
-        <option value="100016">100016 — Correos (ES)</option>
-        <option value="100018">100018 — Deutsche Post</option>
-        <option value="100020">100020 — Poste Italiane</option>
-        <option value="100023">100023 — Australia Post</option>
-        <option value="100025">100025 — Canada Post</option>
-      </select>
+      <label class="field-label" for="carrier-search">Carrier (optional)</label>
+      <input id="carrier-search" type="text" class="field-input"
+             placeholder="Type carrier name or leave blank to auto-detect"
+             autocomplete="off" data-carrier-search="carrier">
+      <span class="field-hint">Search by name, or enter numeric code directly below.</span>
+      <div id="create-carrier-results" class="carrier-results" aria-live="polite"></div>
+      <input id="carrier" name="carrier" type="number" class="field-input"
+             min="1" max="2147483647" placeholder="Numeric carrier code (optional)">
+
+      <details class="field-details">
+        <summary class="field-label">Additional tracking parameters (optional)</summary>
+        <div class="field-details-body">
+          <span class="field-hint">Required by some carriers (e.g. PostNL needs destination country). If registration fails with a missing-parameter error, add the required field here and it will be retried.</span>
+          <label class="field-label" for="destination_country">Destination Country (alpha-2)</label>
+          <input id="destination_country" name="destination_country" type="text" class="field-input"
+                 placeholder="e.g. NL, FR, DE" maxlength="2" pattern="[A-Za-z]{2}">
+          <label class="field-label" for="destination_postal_code">Destination Postal Code</label>
+          <input id="destination_postal_code" name="destination_postal_code" type="text" class="field-input"
+                 placeholder="e.g. 1234 AB" maxlength="20">
+          <label class="field-label" for="phone_number_last_4">Phone Number (last 4 digits)</label>
+          <input id="phone_number_last_4" name="phone_number_last_4" type="text" class="field-input"
+                 placeholder="e.g. 8888" maxlength="10" pattern="\d{1,10}">
+        </div>
+      </details>
 
       <label class="field-label" for="name">Label (optional)</label>
       <input id="name" name="name" type="text" class="field-input"

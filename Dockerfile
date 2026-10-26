@@ -1,7 +1,7 @@
 FROM ghcr.io/astral-sh/uv:0.11.18@sha256:78bc42400d77b0678ba95765305c826652ed5431f399257271dda681d0318f03 AS uv
 FROM python:3.13.13-slim-bookworm@sha256:355bfa66770995d7e9a0da4b3473b44d0cb451f6b56f5615ad9c39e3c4eca03f
 
-ARG VERSION=0.1.1
+ARG VERSION=0.1.2
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="NovaTrack" \
       org.opencontainers.image.description="Self-hosted personal parcel tracking" \
