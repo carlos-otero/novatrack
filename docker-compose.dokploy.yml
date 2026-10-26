@@ -1,0 +1,34 @@
+# Dokploy/shared DB: Infra provisions DATABASE_URL, OIDC, secrets and HTTPS domain.
+# Configure environment values in Dokploy, not in this file.
+x-app: &app
+  image: ${NOVATRACK_IMAGE:?Set exact registry image and version}
+  env_file: .env
+  restart: unless-stopped
+  read_only: true
+  tmpfs: ['/tmp:size=32m,noexec,nosuid']
+  cap_drop: [ALL]
+  security_opt: ['no-new-privileges:true']
+  networks: [dokploy-network]
+
+services:
+  migrate:
+    <<: *app
+    command: [migrate]
+    restart: 'no'
+    healthcheck: {disable: true}
+  web:
+    <<: *app
+    command: [web]
+    expose: ['8000']
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+  worker:
+    <<: *app
+    command: [worker]
+    healthcheck: {disable: true}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
+networks:
+  dokploy-network:
+    external: true

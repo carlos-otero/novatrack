@@ -1,0 +1,44 @@
+# Ready-to-enable GitHub Actions workflow. Copy to .github/workflows/ci.yml
+# using the repository owner's web editor or a token with workflow scope.
+# No third-party actions or deployment secrets are needed.
+name: Tests and image
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    services:
+      postgres:
+        image: postgres:16.14-bookworm@sha256:64154d0babcb1741988719e703419af0382b19953706149f9872fbd0f438efa8
+        env:
+          POSTGRES_DB: novatrack
+          POSTGRES_USER: novatrack
+          POSTGRES_PASSWORD: disposable-ci-only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd 'pg_isready -U novatrack -d novatrack'
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - name: Read public source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -c "http.extraheader=Authorization: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch --depth 1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Run locked checks and build
+        env:
+          DATABASE_URL: postgresql+psycopg://novatrack:disposable-ci-only@127.0.0.1:5432/novatrack
+        run: |
+          docker run --rm --network host -v "$PWD:/work" -w /work \
+            -e DATABASE_URL \
+            python:3.13.13-slim-bookworm@sha256:355bfa66770995d7e9a0da4b3473b44d0cb451f6b56f5615ad9c39e3c4eca03f \
+            sh -c 'pip install uv==0.11.18 && uv sync --frozen && uv run pytest -q && uv run ruff check . && uv run alembic upgrade head && uv run alembic check'
+          docker build --build-arg "REVISION=$GITHUB_SHA" -t novatrack:ci .

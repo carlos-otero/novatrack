@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Archive — NovaTrack{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h2 class="page-title">Archive</h2>
+</div>
+{% if shipments %}
+<div class="shipment-grid">
+  {% for s in shipments %}
+  <a href="/shipments/{{ s.id | e }}" class="shipment-card status-{{ s.status | e }}">
+    <div class="card-header">
+      <span class="card-number">{{ s.number | e }}</span>
+      <span class="badge badge-{{ s.status | e }}">{{ s.status | e | replace('_', ' ') | title }}</span>
+    </div>
+    {% if s.name %}<div class="card-name">{{ s.name | e }}</div>{% endif %}
+    {% if s.archived_at %}<div class="card-meta">Archived {{ s.archived_at.strftime('%Y-%m-%d') }}</div>{% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon">📂</div>
+  <h3 class="empty-title">Archive is empty</h3>
+  <p class="empty-body">Delivered and manually archived shipments appear here.</p>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Edit Channel — NovaTrack{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h2 class="page-title">Edit Channel: {{ channel.name | e }}</h2>
+  <a href="/settings" class="btn btn-ghost">← Settings</a>
+</div>
+
+<form action="/settings/channels/{{ channel.id | e }}/edit" method="post" class="form">
+  <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+
+  <p class="field-hint">Kind: <strong>{{ channel.kind | e }}</strong> (cannot be changed)</p>
+
+  {% if channel.kind == 'webhook' %}
+  <label class="field-label" for="url">URL <span class="req">*</span></label>
+  <input id="url" name="url" type="url" class="field-input"
+         value="{{ channel.url or '' | e }}" placeholder="https://…" maxlength="2048" required>
+  <span class="field-hint">Must be HTTPS. No credentials or query strings.</span>
+
+  <label class="field-label" for="secret_env">Secret Environment Variable Name</label>
+  <input id="secret_env" name="secret_env" type="text" class="field-input"
+         value="{{ channel.secret_env or '' | e }}"
+         placeholder="NOVATRACK_WEBHOOK_SECRET_MY_HOOK" maxlength="100">
+  <span class="field-hint">Must match <code>NOVATRACK_WEBHOOK_SECRET_[A-Z0-9_]+</code>.</span>
+  {% endif %}
+
+  <fieldset class="field-group">
+    <legend class="field-label">Events</legend>
+    {% for ev in valid_events %}
+    <label>
+      <input type="checkbox" name="events" value="{{ ev | e }}"
+             {% if ev in (channel.events or []) %}checked{% endif %}>
+      {{ ev | e | replace('_', ' ') | title }}
+    </label>
+    {% endfor %}
+  </fieldset>
+
+  <div class="form-actions">
+    <a href="/settings" class="btn btn-ghost">Cancel</a>
+    <button type="submit" class="btn btn-primary">Save Changes</button>
+  </div>
+</form>
+{% endblock %}

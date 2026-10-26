@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Active Shipments — NovaTrack{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h2 class="page-title">Active Shipments</h2>
+  <button class="btn btn-primary" data-modal-open="create-modal">+ Add Shipment</button>
+</div>
+
+{% if form_error %}
+<div class="alert alert-error" role="alert">{{ form_error | e }}</div>
+{% endif %}
+
+<!-- Create Shipment Modal -->
+<dialog id="create-modal" class="modal">
+  <div class="modal-box">
+    <h3 class="modal-title">Track New Shipment</h3>
+    <form action="/shipments" method="post" class="form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+
+      <label class="field-label" for="number">Tracking Number <span class="req">*</span></label>
+      <input id="number" name="number" type="text" class="field-input"
+             placeholder="e.g. 1Z999AA10123456784"
+             pattern="[A-Za-z0-9\-]{5,50}" required maxlength="50"
+             autocomplete="off">
+      <span class="field-hint">5-50 alphanumeric characters or hyphens. Case is preserved.</span>
+
+      <label class="field-label" for="carrier">Carrier (optional)</label>
+      <select id="carrier" name="carrier" class="field-input">
+        <option value="">— auto-detect —</option>
+        <option value="100001">100001 — DHL Express</option>
+        <option value="100002">100002 — FedEx</option>
+        <option value="100003">100003 — UPS</option>
+        <option value="21051">21051 — USPS</option>
+        <option value="3011">3011 — Royal Mail</option>
+        <option value="190105">190105 — La Poste (FR)</option>
+        <option value="100171">100171 — Amazon Logistics</option>
+        <option value="100016">100016 — Correos (ES)</option>
+        <option value="100018">100018 — Deutsche Post</option>
+        <option value="100020">100020 — Poste Italiane</option>
+        <option value="100023">100023 — Australia Post</option>
+        <option value="100025">100025 — Canada Post</option>
+      </select>
+
+      <label class="field-label" for="name">Label (optional)</label>
+      <input id="name" name="name" type="text" class="field-input"
+             placeholder="e.g. Keyboard stand" maxlength="200">
+
+      <label class="field-label" for="store">Store (optional)</label>
+      <input id="store" name="store" type="text" class="field-input"
+             placeholder="e.g. Amazon" maxlength="200">
+
+      <label class="field-label" for="notes">Notes (optional)</label>
+      <textarea id="notes" name="notes" class="field-input field-textarea"
+                placeholder="Any notes…" maxlength="2000"></textarea>
+
+      <div class="form-actions">
+        <button type="button" class="btn btn-ghost" data-modal-close="create-modal">Cancel</button>
+        <button type="submit" class="btn btn-primary">Track</button>
+      </div>
+    </form>
+  </div>
+</dialog>
+
+{% if shipments %}
+<div class="shipment-grid">
+  {% for s in shipments %}
+  <a href="/shipments/{{ s.id | e }}" class="shipment-card status-{{ s.status | e }}">
+    <div class="card-header">
+      <span class="card-number">{{ s.number | e }}</span>
+      <span class="badge badge-{{ s.status | e }}">{{ s.status | e | replace('_', ' ') | title }}</span>
+    </div>
+    {% if s.name %}
+    <div class="card-name">{{ s.name | e }}</div>
+    {% endif %}
+    {% if s.store %}
+    <div class="card-meta">{{ s.store | e }}</div>
+    {% endif %}
+    {% if s.eta %}
+    <div class="card-eta">ETA {{ (s.eta.get('from') or s.eta.get('to') or '')[:10] | e }}{% if s.eta.get('to') and s.eta.get('to')[:10] != (s.eta.get('from') or '')[:10] %} – {{ s.eta.get('to')[:10] | e }}{% endif %}</div>
+    {% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon">📦</div>
+  <h3 class="empty-title">No active shipments</h3>
+  <p class="empty-body">Add a tracking number to get started.</p>
+</div>
+{% endif %}
+{% endblock %}

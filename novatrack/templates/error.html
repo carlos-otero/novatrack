@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Error — NovaTrack{% endblock %}
+{% block content %}
+<div class="error-state">
+  <h2 class="error-code">{{ status_code | default('Error') }}</h2>
+  <p class="error-msg">{{ message | default('Something went wrong.') | e }}</p>
+  <a href="/" class="btn btn-primary">Go home</a>
+</div>
+{% endblock %}

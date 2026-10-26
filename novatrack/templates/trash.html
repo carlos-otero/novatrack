@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Trash — NovaTrack{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h2 class="page-title">Trash</h2>
+</div>
+{% if shipments %}
+<div class="shipment-grid">
+  {% for s in shipments %}
+  <a href="/shipments/{{ s.id | e }}" class="shipment-card">
+    <div class="card-header">
+      <span class="card-number">{{ s.number | e }}</span>
+      <span class="badge badge-trash">Trashed</span>
+    </div>
+    {% if s.name %}<div class="card-name">{{ s.name | e }}</div>{% endif %}
+    {% if s.trashed_at %}<div class="card-meta">Trashed {{ s.trashed_at.strftime('%Y-%m-%d') }}</div>{% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon">🗑️</div>
+  <h3 class="empty-title">Trash is empty</h3>
+  <p class="empty-body">Trashed shipments are purged automatically per your retention settings.</p>
+</div>
+{% endif %}
+{% endblock %}

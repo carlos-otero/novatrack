@@ -1,0 +1,55 @@
+# Standalone installation; place behind an HTTPS reverse proxy.
+# Copy .env.example -> .env and set every credential before starting.
+x-app: &app
+  build: .
+  image: novatrack:0.1.0
+  env_file: .env
+  restart: unless-stopped
+  read_only: true
+  tmpfs: ['/tmp:size=32m,noexec,nosuid']
+  cap_drop: [ALL]
+  security_opt: ['no-new-privileges:true']
+  networks: [novatrack]
+
+services:
+  postgres:
+    image: postgres:16.14-bookworm@sha256:64154d0babcb1741988719e703419af0382b19953706149f9872fbd0f438efa8
+    environment:
+      POSTGRES_DB: novatrack
+      POSTGRES_USER: novatrack
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes: ['postgres-data:/var/lib/postgresql/data']
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U novatrack -d novatrack']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [novatrack]
+
+  migrate:
+    <<: *app
+    command: [migrate]
+    restart: 'no'
+    healthcheck: {disable: true}
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  web:
+    <<: *app
+    command: [web]
+    ports: ['127.0.0.1:8000:8000']
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
+  worker:
+    <<: *app
+    command: [worker]
+    healthcheck: {disable: true}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
+networks:
+  novatrack:
+volumes:
+  postgres-data:

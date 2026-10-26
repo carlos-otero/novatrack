@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}{{ shipment.number | e }} — NovaTrack{% endblock %}
+{% block content %}
+<div class="detail-header">
+  <a href="{{ '/archive' if shipment.bucket == 'archive' else '/trash' if shipment.bucket == 'trash' else '/' }}" class="back-link">← {{ 'Archive' if shipment.bucket == 'archive' else 'Trash' if shipment.bucket == 'trash' else 'Active' }}</a>
+  <div class="detail-meta">
+    <h2 class="detail-number">{{ shipment.number | e }}</h2>
+    <span class="badge badge-{{ shipment.status | e }}">
+      {{ shipment.status | e | replace('_', ' ') | title }}
+    </span>
+  </div>
+  {% if shipment.name %}<p class="detail-label">{{ shipment.name | e }}</p>{% endif %}
+  {% if shipment.store %}<p class="detail-store">{{ shipment.store | e }}</p>{% endif %}
+</div>
+
+{% if shipment.provider_error %}
+<div class="alert alert-error" role="alert">
+  Provider error: {{ shipment.provider_error | e }}
+</div>
+{% endif %}
+
+{% if shipment.eta %}
+<div class="detail-section">
+  <h3 class="section-title">Estimated Delivery</h3>
+  <div class="eta-box">
+    {% if shipment.eta.get('from') or shipment.eta.get('to') %}
+    <span class="eta-range">{{ shipment.eta.get('from', '') | e }} – {{ shipment.eta.get('to', '') | e }}</span>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<div class="detail-section">
+  <h3 class="section-title">Actions</h3>
+  <div class="action-row">
+    {% if shipment.bucket == 'active' %}
+    <form action="/shipments/{{ shipment.id | e }}/refresh" method="post" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <button type="submit" class="btn btn-secondary">Refresh</button>
+    </form>
+    <form action="/shipments/{{ shipment.id | e }}/archive" method="post" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <button type="submit" class="btn btn-ghost">Archive</button>
+    </form>
+    <form action="/shipments/{{ shipment.id | e }}/trash" method="post" class="inline-form"
+          data-confirm="Move this shipment to Trash?">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <button type="submit" class="btn btn-danger">Trash</button>
+    </form>
+    {% if shipment.status == 'untrackable' %}
+    <form action="/shipments/{{ shipment.id | e }}/deliver" method="post" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <button type="submit" class="btn btn-primary">Mark Delivered</button>
+    </form>
+    {% endif %}
+    {% endif %}
+    {% if shipment.bucket == 'archive' %}
+    <form action="/shipments/{{ shipment.id | e }}/trash" method="post" class="inline-form"
+          data-confirm="Move this shipment to Trash?">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <button type="submit" class="btn btn-danger btn-sm">Move to Trash</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% if shipment.notes %}
+<div class="detail-section">
+  <h3 class="section-title">Notes</h3>
+  <p class="notes-text">{{ shipment.notes | e }}</p>
+</div>
+{% endif %}
+
+{% if events %}
+<div class="detail-section">
+  <h3 class="section-title">Tracking History</h3>
+  <ol class="event-list">
+  {% for ev in events %}
+  <li class="event-item">
+    <div class="event-time">
+      {% if ev.occurred_at %}
+        {{ ev.occurred_at.astimezone(tz).strftime('%Y-%m-%d %H:%M') }}
+      {% else %}
+        —
+      {% endif %}
+    </div>
+    <div class="event-body">
+      <span class="event-desc">{{ ev.description | e }}</span>
+      {% if ev.location %}<span class="event-loc">{{ ev.location | e }}</span>{% endif %}
+      {% if ev.provider %}<span class="event-provider">via {{ ev.provider | e }}</span>{% endif %}
+    </div>
+  </li>
+  {% endfor %}
+  </ol>
+</div>
+{% endif %}
+
+{% endblock %}

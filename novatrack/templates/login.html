@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign In — NovaTrack</title>
+  <link rel="stylesheet" href="/static/auth.css">
+</head>
+<body>
+<div class="auth-center">
+  <div class="auth-card">
+    <h1 class="auth-title">NovaTrack</h1>
+    <p class="auth-subtitle">Self-hosted parcel tracking</p>
+    {% if request.query_params.get('error') == 'unauthorized' %}
+    <div class="alert alert-error" role="alert">
+      Access denied. Your account is not authorised.
+    </div>
+    {% elif request.query_params.get('error') %}
+    <div class="alert alert-error" role="alert">
+      Authentication failed. Please try again.
+    </div>
+    {% endif %}
+    {% if service_error %}
+    <div class="alert alert-error" role="alert">{{ service_error | e }}</div>
+    {% endif %}
+    <a href="/auth/login" class="btn btn-primary btn-full">Sign in with SSO</a>
+  </div>
+</div>
+</body>
+</html>

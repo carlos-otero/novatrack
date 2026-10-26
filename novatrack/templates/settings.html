@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% block title %}Settings — NovaTrack{% endblock %}
+{% block content %}
+<h2 class="page-title">Settings</h2>
+
+{% if new_api_key %}
+<div class="alert alert-success" role="alert">
+  <strong>API key created.</strong> Copy it now — it will not be shown again.<br>
+  <code class="api-key-display">{{ new_api_key | e }}</code>
+  <p class="field-hint">Name: {{ new_api_key_name | e }}</p>
+</div>
+{% endif %}
+
+{% if quota_error %}
+<div class="alert alert-error" role="alert">{{ quota_error | e }}</div>
+{% endif %}
+
+<!-- Retention settings -->
+<section class="settings-section">
+  <h3 class="section-title">Retention</h3>
+  {% if app_cfg %}
+  <form action="/settings/retention" method="post" class="form form-inline">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <label class="field-label" for="archive_days">Archive delivered after (days)</label>
+    <input id="archive_days" name="archive_days" type="number" min="1" max="3650"
+           value="{{ app_cfg.archive_days | e }}" class="field-input field-input-sm">
+    <label class="field-label" for="purge_days">Purge trash after (days)</label>
+    <input id="purge_days" name="purge_days" type="number" min="1" max="3650"
+           value="{{ app_cfg.purge_days | e }}" class="field-input field-input-sm">
+    <button type="submit" class="btn btn-primary">Save</button>
+  </form>
+  {% endif %}
+</section>
+
+<!-- Quota -->
+<section class="settings-section">
+  <h3 class="section-title">API Quota</h3>
+  {% if app_cfg and app_cfg.quota %}
+  <p class="field-hint">
+    Used: {{ app_cfg.quota.get('quota_used', '?') }} / {{ app_cfg.quota.get('quota_total', '?') }}
+    {% if app_cfg.quota_checked_at %}
+    (checked {{ app_cfg.quota_checked_at.strftime('%Y-%m-%d %H:%M') }})
+    {% endif %}
+  </p>
+  {% else %}
+  <p class="field-hint">Not yet checked.</p>
+  {% endif %}
+  <form action="/settings/quota" method="post" class="form form-inline">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <button type="submit" class="btn btn-secondary">Check Quota Now</button>
+  </form>
+</section>
+
+<!-- Notification channels -->
+<section class="settings-section">
+  <h3 class="section-title">Notification Channels</h3>
+  {% if channels %}
+  <table class="data-table">
+    <thead><tr><th>Name</th><th>Kind</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for ch in channels %}
+    <tr {% if not ch.enabled %}class="row-disabled"{% endif %}>
+      <td>{{ ch.name | e }}</td>
+      <td><span class="badge badge-kind">{{ ch.kind | e }}</span></td>
+      <td>
+        {% if ch.enabled %}
+        <span class="badge badge-delivered">Enabled</span>
+        {% else %}
+        <span class="badge badge-pending">Disabled</span>
+        {% endif %}
+      </td>
+      <td class="action-cell">
+        <a href="/settings/channels/{{ ch.id | e }}/edit" class="btn btn-ghost btn-sm">Edit</a>
+        <form action="/settings/channels/{{ ch.id | e }}/toggle" method="post" class="inline-form">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-ghost btn-sm">
+            {{ 'Disable' if ch.enabled else 'Enable' }}
+          </button>
+        </form>
+        <form action="/settings/channels/{{ ch.id | e }}/delete" method="post"
+              class="inline-form" data-confirm="Disable this channel? Delivery history is preserved.">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-danger btn-sm">Disable</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty-inline">No channels configured.</p>
+  {% endif %}
+
+  <details class="details-block">
+    <summary class="details-summary">Add Notification Channel</summary>
+    <form action="/settings/channels" method="post" class="form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <label class="field-label" for="ch-name">Name <span class="req">*</span></label>
+      <input id="ch-name" name="name" type="text" class="field-input" required maxlength="100">
+
+      <label class="field-label" for="ch-kind">Kind</label>
+      <select id="ch-kind" name="kind" class="field-input">
+        <option value="webhook">Webhook</option>
+        {% if telegram_available %}
+        <option value="telegram">Telegram</option>
+        {% else %}
+        <option value="telegram" disabled title="Set TELEGRAM_ENABLED + TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID to enable">
+          Telegram (requires env config)
+        </option>
+        {% endif %}
+      </select>
+
+      <label class="field-label" for="ch-url">URL</label>
+      <input id="ch-url" name="url" type="url" class="field-input" placeholder="https://…" maxlength="2048">
+      <span class="field-hint">Required for webhook. Must be HTTPS. No embedded credentials or query strings.</span>
+
+      <label class="field-label" for="ch-secret">Secret Environment Variable Name</label>
+      <input id="ch-secret" name="secret_env" type="text" class="field-input"
+             placeholder="NOVATRACK_WEBHOOK_SECRET_MY_HOOK" maxlength="100">
+      <span class="field-hint">Must match <code>NOVATRACK_WEBHOOK_SECRET_[A-Z0-9_]+</code>.
+        The env var holds the signing secret — never paste the secret here.</span>
+
+      <fieldset class="field-group">
+        <legend class="field-label">Events</legend>
+        <label><input type="checkbox" name="events" value="status_changed" checked> Status changed</label>
+        <label><input type="checkbox" name="events" value="delivered" checked> Delivered</label>
+        <label><input type="checkbox" name="events" value="exception" checked> Exception</label>
+        <label><input type="checkbox" name="events" value="quota_low"> Quota low</label>
+      </fieldset>
+
+      <button type="submit" class="btn btn-primary">Add Channel</button>
+    </form>
+  </details>
+</section>
+
+<!-- API keys -->
+<section class="settings-section">
+  <h3 class="section-title">API Keys</h3>
+  {% if api_keys %}
+  <table class="data-table">
+    <thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for k in api_keys %}
+    <tr>
+      <td>{{ k.name | e }}</td>
+      <td><code>{{ k.prefix | e }}…</code></td>
+      <td>{{ k.created_at.strftime('%Y-%m-%d') if k.created_at else '' }}</td>
+      <td>
+        <form action="/settings/api-keys/{{ k.id | e }}/revoke" method="post"
+              class="inline-form" data-confirm="Revoke this API key?">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-danger btn-sm">Revoke</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty-inline">No active API keys.</p>
+  {% endif %}
+
+  <details class="details-block">
+    <summary class="details-summary">Create API Key</summary>
+    <form action="/settings/api-keys" method="post" class="form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <label class="field-label" for="key-name">Key Name</label>
+      <input id="key-name" name="name" type="text" class="field-input"
+             placeholder="e.g. Home automation" maxlength="100">
+      <button type="submit" class="btn btn-primary">Create Key</button>
+    </form>
+  </details>
+</section>
+
+{% endblock %}

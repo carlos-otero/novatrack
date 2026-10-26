@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}NovaTrack{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="site-header">
+  <nav class="nav">
+    <a class="nav-brand" href="/">NovaTrack</a>
+    <ul class="nav-links">
+      <li><a href="/" {% if request.url.path == '/' %}class="active"{% endif %}>Active</a></li>
+      <li><a href="/archive" {% if request.url.path == '/archive' %}class="active"{% endif %}>Archive</a></li>
+      <li><a href="/trash" {% if request.url.path == '/trash' %}class="active"{% endif %}>Trash</a></li>
+      <li><a href="/settings" {% if request.url.path == '/settings' %}class="active"{% endif %}>Settings</a></li>
+    </ul>
+    {% if user %}
+    <div class="nav-user">
+      <span class="nav-username">{{ user.name | e }}</span>
+      <form action="/auth/logout" method="post" class="inline-form">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-ghost btn-sm">Sign out</button>
+      </form>
+    </div>
+    {% endif %}
+  </nav>
+</header>
+<main class="main">
+  {% block content %}{% endblock %}
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
