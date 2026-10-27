@@ -728,7 +728,14 @@ def process_operations(session: Session, provider, limit: int = 20) -> int:
             succeeded += 1
 
         except ProviderError as exc:
-            _record_retry(op, shipment, str(exc), now, reset_immediately=exc.retryable_without_quota)
+            if exc.terminal:
+                # Permanent blocker (e.g. -18010022 date param): mark op done, no retry.
+                op.done = True
+                shipment.provider_error = str(exc)[:200]
+                shipment.updated_at = utcnow()
+                session.flush()
+            else:
+                _record_retry(op, shipment, str(exc), now, reset_immediately=exc.retryable_without_quota)
         except Exception:
             # Generic network failure — generic message, no upstream content
             _record_retry(op, shipment, "provider unavailable", now)
@@ -762,6 +769,212 @@ def _record_retry(
     session = Session.object_session(op)
     if session is not None:
         session.flush()
+
+
+def restore_shipment(session: Session, shipment: Shipment, provider) -> bool:
+    """Restore a trashed shipment back to the active bucket.
+
+    Three registration states handled:
+
+    1. ``registered=True`` (pending delete not yet run):
+       The provider still has the number.  Cancel the pending delete, reset
+       ``registered=False``, and queue a fresh register op.  The worker will
+       call register; the provider returns -18019901 (already registered) which
+       is treated as idempotent success.  One quota slot is NOT consumed (provider
+       only charges on first acceptance, not on already-registered rejection).
+       Returns True so the caller can warn the user.
+
+    2. ``registered=False`` with a completed delete op (done=True):
+       The worker deleted the number at the provider while the shipment was in
+       trash.  No pending deletes to cancel.  Queue a fresh register op (costs one
+       quota slot on the next worker tick).  Returns True.
+
+    3. ``registered=False`` with a pending register op (paused/not-yet-run):
+       The shipment was never confirmed registered.  Preserve the existing
+       register op (it will run / un-pause once the user supplies missing params).
+       Returns False.
+
+    Returns True when a re-register op was queued (caller should warn about
+    quota cost), False otherwise.
+    Caller must commit.
+    """
+    if shipment.bucket != "trash":
+        raise ValueError("Only trashed shipments can be restored")
+
+    # Cancel pending delete ops so they don't run after the bucket changes.
+    pending_deletes = (
+        session.execute(
+            select(ProviderOperation).where(
+                ProviderOperation.shipment_id == shipment.id,
+                ProviderOperation.kind == "delete",
+                ProviderOperation.done == False,  # noqa: E712
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for op in pending_deletes:
+        op.done = True
+    session.flush()
+
+    shipment.bucket = "active"
+    shipment.trashed_at = None
+    shipment.updated_at = utcnow()
+    session.flush()
+
+    reregister = False
+    if shipment.registered:
+        # State 1: registered=True — pending delete was cancelled; provider still
+        # has the number.  Reset and re-register (idempotent, no quota charge).
+        shipment.registered = False
+        shipment.provider_error = None
+        session.add(ProviderOperation(shipment_id=shipment.id, kind="register"))
+        session.flush()
+        reregister = True
+    else:
+        # State 2 vs State 3: registered=False.
+        # If a pending register op exists, it will proceed on its own (State 3).
+        # If no pending register op but a completed delete op exists, the provider
+        # deleted the number while in trash — queue a re-register (State 2, costs quota).
+        has_pending_register = (
+            session.execute(
+                select(ProviderOperation).where(
+                    ProviderOperation.shipment_id == shipment.id,
+                    ProviderOperation.kind == "register",
+                    ProviderOperation.done == False,  # noqa: E712
+                )
+            ).scalar_one_or_none()
+            is not None
+        )
+        if not has_pending_register:
+            has_done_delete = (
+                session.execute(
+                    select(ProviderOperation).where(
+                        ProviderOperation.shipment_id == shipment.id,
+                        ProviderOperation.kind == "delete",
+                        ProviderOperation.done == True,  # noqa: E712
+                    )
+                ).scalar_one_or_none()
+                is not None
+            )
+            if has_done_delete:
+                # Provider deleted the number while in trash; re-register costs quota.
+                shipment.provider_error = None
+                session.add(ProviderOperation(shipment_id=shipment.id, kind="register"))
+                session.flush()
+                reregister = True
+
+    return reregister
+
+
+def purge_shipment(session: Session, shipment: Shipment) -> None:
+    """Hard-delete a trashed shipment, preserving provider deletion lifecycle.
+
+    Only allowed when:
+    - Shipment is in the trash bucket.
+    - All provider operations are done (op.done=True) or no ops exist.
+      A pending delete means the remote resource has not been cleaned up yet;
+      purging before that completes would orphan the provider record.
+
+    CASCADE removes TrackingEvent, Transition, ProviderOperation rows.
+    Notification rows have no FK to shipments and are preserved.
+
+    Raises ValueError if the shipment is not in trash or has pending ops.
+    Caller must commit.
+    """
+    if shipment.bucket != "trash":
+        raise ValueError("Only trashed shipments can be purged")
+
+    pending_op = (
+        session.execute(
+            select(ProviderOperation)
+            .where(
+                ProviderOperation.shipment_id == shipment.id,
+                ProviderOperation.done == False,  # noqa: E712
+            )
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    if pending_op is not None:
+        raise ValueError(
+            "Cannot purge — provider deletion is still pending. "
+            "Try again once the shipment has been fully deleted by the provider."
+        )
+
+    session.delete(shipment)
+    session.flush()
+
+
+def force_purge_unregistered_trash(session: Session, shipment: Shipment) -> None:
+    """Immediately hard-delete a trashed, NEVER-registered shipment.
+
+    This is safe because the shipment was never registered with the provider —
+    there is no remote resource to orphan.  Any pending deletetrack operations
+    are cancelled (marked done) before deletion to prevent spurious provider calls.
+
+    Raises ValueError if the shipment is not in trash, or if it was ever
+    registered with the provider (use restore_shipment + purge_shipment instead
+    to preserve the provider lifecycle for registered shipments).
+
+    CASCADE removes TrackingEvent, Transition, ProviderOperation rows.
+    Notification rows have no FK to shipments and are preserved.
+    Caller must commit.
+    """
+    if shipment.bucket != "trash":
+        raise ValueError("Only trashed shipments can be force-purged")
+    if shipment.registered:
+        raise ValueError(
+            "force_purge_unregistered_trash may only be used for shipments that "
+            "were never registered with the provider.  Use restore_shipment or "
+            "purge_shipment instead."
+        )
+
+    # Cancel any pending ops (deletetrack for an unregistered shipment is
+    # idempotent — the provider would return -18019902 — so cancelling is safe).
+    pending_ops = (
+        session.execute(
+            select(ProviderOperation).where(
+                ProviderOperation.shipment_id == shipment.id,
+                ProviderOperation.done == False,  # noqa: E712
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for op in pending_ops:
+        op.done = True
+    session.flush()
+
+    session.delete(shipment)
+    session.flush()
+
+
+def is_registration_paused(session: Session, shipment: Shipment) -> bool:
+    """Return True if the shipment's pending register op is paused indefinitely.
+
+    A register op is paused when the provider rejected it for a missing/invalid
+    additional parameter and next_attempt_at was set to _PAUSED_INDEFINITELY
+    (year 9999).  The worker will never retry it; the user must update the
+    tracking parameters via POST /shipments/{id}/params to resume.
+    """
+    pending_reg = session.execute(
+        select(ProviderOperation).where(
+            ProviderOperation.shipment_id == shipment.id,
+            ProviderOperation.kind == "register",
+            ProviderOperation.done == False,  # noqa: E712
+        )
+    ).scalar_one_or_none()
+    if pending_reg is None:
+        return False
+    # Paused sentinel: year 9999 (>= 1000 years from now)
+    if pending_reg.next_attempt_at is None:
+        return False
+    nat = pending_reg.next_attempt_at
+    if nat.tzinfo is None:
+        nat = nat.replace(tzinfo=UTC)
+    return nat.year >= 9000
 
 
 def housekeeping(session: Session, provider, now: datetime | None = None) -> None:

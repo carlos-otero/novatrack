@@ -119,7 +119,7 @@ class CreateShipmentRequest(BaseModel):
 
 
 class ChangeCarrierRequest(BaseModel):
-    carrier: int = Field(..., gt=0, le=_PG_INT_MAX, description="New 17TRACK numeric carrier code")
+    carrier_new: int = Field(..., gt=0, le=_PG_INT_MAX, description="New 17TRACK numeric carrier code")
 
 
 class UpdateShipmentParamsRequest(BaseModel):
@@ -349,7 +349,7 @@ def create_app(
 
     app = FastAPI(
         title="NovaTrack",
-        version="0.1.2",
+        version="0.1.3",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
@@ -686,7 +686,7 @@ def create_app(
                     detail="Shipment must be registered before changing carrier",
                 )
             try:
-                tracking.change_carrier_shipment(s, ship, prov, body.carrier)
+                tracking.change_carrier_shipment(s, ship, prov, body.carrier_new)
                 s.commit()
                 try:
                     s.refresh(ship)
@@ -935,6 +935,60 @@ def create_app(
                 )
                 session.commit()
         except ValueError as exc:
+            err_str = str(exc)
+            link_shipment_id: str | None = None
+            link_shipment_bucket: str | None = None
+
+            if "already exists" in err_str:
+                # Look up existing shipment for contextual handling + link
+                from sqlalchemy import select as _sel
+
+                from novatrack.models import Shipment as _Shipment
+                with sf() as _s:
+                    _existing = _s.execute(
+                        _sel(_Shipment).where(_Shipment.number == number)
+                    ).scalar_one_or_none()
+                if _existing is not None:
+                    if _existing.bucket == "trash" and not _existing.registered:
+                        # Safe to purge (never registered → no provider record).
+                        # Auto-purge then recreate transparently.
+                        try:
+                            with sf() as _s2:
+                                _to_purge = _s2.get(_Shipment, _existing.id)
+                                if _to_purge:
+                                    tracking.force_purge_unregistered_trash(_s2, _to_purge)
+                                    _s2.commit()
+                            # Recreate with the new submitted data
+                            with sf() as _s3:
+                                tracking.create_shipment(
+                                    _s3,
+                                    prov,
+                                    number=number,
+                                    carrier=carrier,
+                                    name=name,
+                                    store=store_val,
+                                    notes=notes_val,
+                                    destination_country=dest_country,
+                                    destination_postal_code=dest_postal,
+                                    phone_number_last_4=phone_last4,
+                                )
+                                _s3.commit()
+                            return RedirectResponse("/", status_code=303)
+                        except ValueError:
+                            pass  # Fall through to show error if something went wrong
+                    else:
+                        link_shipment_id = _existing.id
+                        link_shipment_bucket = _existing.bucket
+                        if _existing.bucket == "trash":
+                            err_str = (
+                                "This tracking number is already in Trash (registered with carrier). "
+                                "Restore it to re-activate tracking (history preserved), or purge first."
+                            )
+                        elif _existing.bucket == "archive":
+                            err_str = "This tracking number is already archived."
+                        else:
+                            err_str = "This tracking number is already being tracked."
+
             with sf() as s:
                 shipments = (
                     s.query(Shipment)
@@ -949,7 +1003,9 @@ def create_app(
                 {
                     "user": get_current_user(request),
                     "shipments": shipments,
-                    "form_error": str(exc),
+                    "form_error": err_str,
+                    "form_error_shipment_id": link_shipment_id,
+                    "form_error_bucket": link_shipment_bucket,
                     **_csrf_ctx(request),
                 },
             )
@@ -1021,12 +1077,12 @@ def create_app(
                 .limit(500)
                 .all()
             )
+            reg_paused = tracking.is_registration_paused(s, ship)
 
         # Flash messages via query param
         _FLASH_MESSAGES: dict[str, str] = {
             "not_registered": (
-                "Refresh skipped — shipment is not yet registered with the carrier. "
-                "Registration happens automatically; check back shortly."
+                "Refresh skipped — shipment is not yet registered with the carrier."
             ),
             "carrier_changed": "Carrier updated successfully.",
             "carrier_error": "Carrier change failed — see the error detail below.",
@@ -1034,6 +1090,15 @@ def create_app(
             "params_updated": ("Tracking parameters updated. Registration will be retried automatically."),
             "invalid_country": "Destination country must be a 2-letter ISO alpha-2 code (e.g. ES, NL).",
             "invalid_phone": "Phone (last 4) must contain only digits.",
+            "restored": (
+                "Shipment restored from Trash. "
+                "Re-registration has been queued and will happen automatically (uses one quota slot)."
+            ),
+            "restored_unregistered": "Shipment restored from Trash. Registration will proceed automatically.",
+            "purge_blocked": (
+                "Cannot purge — provider deletion is still pending. "
+                "Try again once the shipment has been fully deleted by the provider."
+            ),
         }
         flash_msg = _FLASH_MESSAGES.get(request.query_params.get("msg", ""))
 
@@ -1046,6 +1111,7 @@ def create_app(
                 "events": events,
                 "tz": tz,
                 "flash_msg": flash_msg,
+                "registration_paused": reg_paused,
                 **_csrf_ctx(request),
             },
         )
@@ -1187,6 +1253,50 @@ def create_app(
             s.commit()
 
         return RedirectResponse("/", status_code=303)
+
+    @app.post("/shipments/{shipment_id}/restore")
+    async def restore_shipment_ui(shipment_id: str, request: Request) -> Response:
+        """Restore a trashed shipment back to active bucket."""
+        form = await request.form()
+        validate_csrf(request, form.get("_csrf"))
+        sf = request.app.state.session_factory
+        prov = request.app.state.provider
+
+        with sf() as s:
+            ship = s.get(Shipment, shipment_id)
+            if not ship:
+                raise HTTPException(status_code=404, detail="Shipment not found")
+            try:
+                reregistered = tracking.restore_shipment(s, ship, prov)
+                s.commit()
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        msg = "restored" if reregistered else "restored_unregistered"
+        return RedirectResponse(f"/shipments/{shipment_id}?msg={msg}", status_code=303)
+
+    @app.post("/shipments/{shipment_id}/purge")
+    async def purge_shipment_ui(shipment_id: str, request: Request) -> Response:
+        """Hard-delete a trashed shipment (only when no pending provider ops)."""
+        form = await request.form()
+        validate_csrf(request, form.get("_csrf"))
+        sf = request.app.state.session_factory
+
+        with sf() as s:
+            ship = s.get(Shipment, shipment_id)
+            if not ship:
+                raise HTTPException(status_code=404, detail="Shipment not found")
+            try:
+                tracking.purge_shipment(s, ship)
+                s.commit()
+            except ValueError:
+                # Pending ops — redirect back with informational message
+                return RedirectResponse(
+                    f"/shipments/{shipment_id}?msg=purge_blocked",
+                    status_code=303,
+                )
+
+        return RedirectResponse("/trash", status_code=303)
 
     @app.post("/shipments/{shipment_id}/deliver")
     async def deliver_shipment_ui(shipment_id: str, request: Request) -> Response:

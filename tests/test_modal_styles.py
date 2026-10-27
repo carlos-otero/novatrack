@@ -31,6 +31,32 @@ def test_mobile_modal_remains_bottom_anchored():
         )
 
 
+def test_alert_warn_defined_in_stylesheet():
+    """alert-warn class must be defined so the registration-paused banner is amber/yellow.
+
+    The template uses alert alert-warn for the paused registration banner.
+    Without this CSS rule the banner renders with no color — invisible as a warning.
+    """
+    css = (ROOT / "static/style.css").read_text()
+    assert ".alert-warn" in css, (
+        "alert-warn CSS class must be defined; the paused-registration banner "
+        "uses it for the amber/yellow color. Without it the banner is invisible."
+    )
+    # Confirm it references --warning so it turns amber/yellow
+    warn_block = re.search(r"\.alert-warn\s*\{([^}]+)\}", css)
+    assert warn_block and "warning" in warn_block[1], (
+        "alert-warn must reference the --warning colour variable"
+    )
+
+
+def test_alert_info_defined_in_stylesheet():
+    """alert-info class must be defined; used for flash messages."""
+    css = (ROOT / "static/style.css").read_text()
+    assert ".alert-info" in css, (
+        "alert-info CSS class must be defined; flash messages use it."
+    )
+
+
 def test_all_template_dialogs_use_shared_modal_styles():
     class DialogParser(HTMLParser):
         def __init__(self):

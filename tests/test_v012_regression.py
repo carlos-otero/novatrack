@@ -24,7 +24,8 @@ from novatrack.carriers import (
     unsupported_required_params,
 )
 from novatrack.providers import ProviderError
-from novatrack.providers.track17 import _PARAM_MISSING_PROMPT
+
+# _PARAM_MISSING_PROMPT removed in v0.1.3 (now per-code messages)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # carriers.unsupported_required_params
@@ -112,7 +113,7 @@ def test_e2e_missing_param_pause_then_user_update_retries(mem_session):
     def mock_register(number, carrier, *, param=None):
         register_calls.append({"number": number, "carrier": carrier, "param": param})
         if not param or "NL" not in param:
-            raise ProviderError(_PARAM_MISSING_PROMPT, retryable_without_quota=True)
+            raise ProviderError("Registration requires the destination postal code for this carrier. Please add the postal code and save.", retryable_without_quota=True)
         return {"number": number, "carrier": carrier}
 
     prov = MagicMock()

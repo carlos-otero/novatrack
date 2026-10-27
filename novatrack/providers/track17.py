@@ -4,28 +4,28 @@ Endpoint: POST https://api.17track.net/track/v2.2/{method}
 Auth header: 17token
 Response envelope: {"code": 0, "data": {"accepted": [...], "rejected": [...]}}
 
-Error codes (17track API v2.2, authoritative source):
-  -18019901  already registered   (register → idempotent OK)
-  -18019902  not registered       (stoptrack, deletetrack → idempotent OK)
-  -18019906  only tracked numbers can be stopped (already stopped → idempotent OK)
+Error codes — v2.2 authoritative source: https://api.17track.net/en/doc
 
-  Note: -18019904 = "Only stopped numbers can be re-tracked" (retrack, NOT register)
-        -18019910 = "Carrier Code incorrect" (NOT already-stopped)
-
-changecarrier error codes (v2.2):
-  -18019801  Not registered — only registered tracking numbers can have carrier changed
-  -18019802  Number is being processed — retry later
-  -18019803  carrier_new cannot be null
-  -18019804  Carrier code does not exist
-  -18019805  Tracking number format does not match the specified carrier
-  -18019806  Carrier can only be changed for active (Tracking) numbers
-  -18019807  Already using this carrier (idempotent)
-  -18019808  Carrier change limit exceeded (max 5 changes per number)
+changecarrier error codes (verified against official docs 2026-10-27):
+  -18019801  Multiple carriers registered — specify carrier_old to disambiguate
+  -18019802  carrier_new value is incorrect
+  -18019803  New carrier code cannot be same as current one
+  -18019804  carrier_new or final_carrier_new must be specified
+  -18019805  Tracking number not registered for carrier_old, or carrier_old incorrect
+  -18019806  Number is stopped — retrack before changing carrier
+  -18019807  Carrier change limit exceeded (max 5 per tracking number)
+  -18019808  Tracking result not returned yet — wait before changing
+  -18019809  Duplicate registration info already exists
 
 Additional-parameter error codes (register):
-  -18010018  Missing required additional parameter (e.g. postal_code)
-  -18010019  Additional parameter format invalid
-  -18010020  Additional parameter value invalid
+  -18010018  Destination country (alpha-2) + postal code required
+  -18010019  Destination postal code required
+  -18010020  Phone number (last 4 digits) required
+  -18010022  Shipping date required (unsupported by NovaTrack — terminal)
+
+IMPORTANT: -18019807 is limit-exceeded, NOT same-carrier.  It must NEVER be
+           treated as idempotent success.  Doing so silently ignores exhausted
+           change slots and causes data corruption.
 """
 
 from __future__ import annotations
@@ -44,39 +44,78 @@ _ALREADY_REGISTERED = -18019901  # "Tracking number already registered"
 _NOT_REGISTERED = -18019902  # "Tracking number is not registered yet"
 _ALREADY_STOPPED = -18019906  # "Only numbers being tracked can be stopped"
 
-# ── changecarrier error codes ────────────────────────────────────────────────
-_CC_NOT_REGISTERED = -18019801  # Number must be registered first
-_CC_PROCESSING = -18019802  # Number is currently being processed
-_CC_NULL_CARRIER = -18019803  # carrier_new cannot be null
-_CC_INVALID_CARRIER = -18019804  # Carrier code does not exist
-_CC_FORMAT_MISMATCH = -18019805  # Number format incompatible with carrier
-_CC_NOT_ACTIVE = -18019806  # Number not in active tracking state
-_CC_SAME_CARRIER = -18019807  # Already using this carrier (idempotent)
-_CC_LIMIT_EXCEEDED = -18019808  # Max 5 carrier changes reached
+# ── changecarrier error codes (verified against official API docs) ────────────
+_CC_MULTIPLE_CARRIERS = -18019801   # Multiple carriers — specify carrier_old
+_CC_INVALID_NEW_CARRIER = -18019802  # carrier_new value is incorrect
+_CC_SAME_AS_CURRENT = -18019803     # New carrier same as current
+_CC_MISSING_NEW = -18019804         # carrier_new / final_carrier_new not specified
+_CC_OLD_NOT_REGISTERED = -18019805  # carrier_old not registered / incorrect
+_CC_STOPPED = -18019806             # Number stopped — retrack first
+_CC_LIMIT_EXCEEDED = -18019807      # Change limit (max 5) reached — NOT idempotent
+_CC_WAIT_RESULTS = -18019808        # Tracking result pending — wait before changing
+_CC_DUPLICATE_INFO = -18019809      # Duplicate registration info
 
 # Human-readable messages for changecarrier rejection codes
 _CC_MESSAGES: dict[int, str] = {
-    _CC_NOT_REGISTERED: "Shipment must be registered with 17TRACK before changing carrier",
-    _CC_PROCESSING: "Shipment is currently being processed — please retry shortly",
-    _CC_NULL_CARRIER: "New carrier code cannot be empty",
-    _CC_INVALID_CARRIER: "Carrier code does not exist",
-    _CC_FORMAT_MISMATCH: "Tracking number format does not match the specified carrier",
-    _CC_NOT_ACTIVE: "Carrier can only be changed for actively-tracked shipments",
-    _CC_SAME_CARRIER: "Shipment is already using this carrier",
-    _CC_LIMIT_EXCEEDED: "Carrier has already been changed 5 times (maximum reached)",
+    _CC_MULTIPLE_CARRIERS: (
+        "Multiple carriers are registered for this tracking number — "
+        "specify carrier_old to identify which one to replace"
+    ),
+    _CC_INVALID_NEW_CARRIER: "The new carrier code is incorrect",
+    _CC_SAME_AS_CURRENT: "The new carrier code cannot be the same as the current carrier",
+    _CC_MISSING_NEW: "carrier_new or final_carrier_new must be specified",
+    _CC_OLD_NOT_REGISTERED: (
+        "The tracking number is not registered for the specified carrier, "
+        "or carrier_old is incorrect"
+    ),
+    _CC_STOPPED: (
+        "Carrier cannot be changed for stopped shipments — "
+        "retrack the shipment before changing carrier"
+    ),
+    _CC_LIMIT_EXCEEDED: (
+        "Carrier change limit reached — this tracking number has already been "
+        "changed 5 times (maximum)"
+    ),
+    _CC_WAIT_RESULTS: (
+        "Tracking result has not been returned yet after the last "
+        "registration or modification — wait for results before changing carrier"
+    ),
+    _CC_DUPLICATE_INFO: (
+        "This carrier registration already exists for the tracking number "
+        "and cannot be changed to duplicate information"
+    ),
 }
 
 # ── Additional-parameter error codes (register) ──────────────────────────────
-_MISSING_PARAM = -18010018  # Missing required additional parameter
-_INVALID_PARAM_FORMAT = -18010019  # Additional parameter format invalid
-_INVALID_PARAM_VALUE = -18010020  # Additional parameter value invalid
+_MISSING_COUNTRY_POSTAL = -18010018  # Destination country + postal code required
+_MISSING_POSTAL = -18010019          # Destination postal code required
+_MISSING_PHONE = -18010020           # Phone number (last 4) required
+_MISSING_DATE = -18010022            # Shipping date required (unsupported by NovaTrack)
 
-# Human-readable prompts for missing-parameter rejections
-_PARAM_MISSING_PROMPT = (
-    "Registration requires additional information for this carrier — "
-    "please add the missing field(s) (postal code, destination country, "
-    "or last 4 digits of phone) and the shipment will be re-registered."
-)
+# Codes that the user CAN fix by supplying missing fields in the UI (pause indefinitely).
+# -18010022 (shipping date) is NOT retryable — NovaTrack cannot supply ship_date
+# and the op must be marked done=True (terminal) so the worker never retries it.
+_PARAM_RETRYABLE_CODES = frozenset({_MISSING_COUNTRY_POSTAL, _MISSING_POSTAL, _MISSING_PHONE})
+
+# Accurate user-facing messages per missing-param code:
+_PARAM_MESSAGES: dict[int, str] = {
+    _MISSING_COUNTRY_POSTAL: (
+        "Registration requires the destination country (ISO alpha-2) and "
+        "postal code for this carrier. Please add the missing field(s) and save."
+    ),
+    _MISSING_POSTAL: (
+        "Registration requires the destination postal code for this carrier. "
+        "Please add the postal code and save."
+    ),
+    _MISSING_PHONE: (
+        "Registration requires the last 4 digits of the recipient's phone "
+        "number for this carrier. Please add the phone field and save."
+    ),
+    _MISSING_DATE: (
+        "This carrier requires a shipping date parameter that NovaTrack cannot "
+        "currently supply. Update the carrier or contact support."
+    ),
+}
 
 # ── Canonical status mapping ─────────────────────────────────────────────────
 _STATUS_MAP: dict[str, str] = {
@@ -235,8 +274,20 @@ class Track17Provider:
                 detected = rej.get("carrier")
                 effective_carrier = detected if detected is not None else carrier
                 return {"number": number, "carrier": effective_carrier}
-            if err_code in (_MISSING_PARAM, _INVALID_PARAM_FORMAT, _INVALID_PARAM_VALUE):
-                raise ProviderError(_PARAM_MISSING_PROMPT, retryable_without_quota=True)
+
+            # Missing-param codes the user can fix via the UI params form.
+            # These are paused indefinitely (retryable_without_quota=True).
+            if err_code in _PARAM_RETRYABLE_CODES:
+                msg = _PARAM_MESSAGES.get(
+                    int(err_code) if isinstance(err_code, int) else 0,
+                    "Missing required tracking parameter — please update the fields and retry.",
+                )
+                raise ProviderError(msg, retryable_without_quota=True)
+
+            # Shipping date required — NovaTrack cannot supply ship_date; terminal.
+            if err_code == _MISSING_DATE:
+                raise ProviderError(_PARAM_MESSAGES[_MISSING_DATE], terminal=True)
+
             raise ProviderError(f"register rejected (code {err_code})")
 
         raise ProviderError("register: number absent from accepted and rejected")
@@ -309,14 +360,16 @@ class Track17Provider:
         """Change the carrier for a registered tracking number.
 
         carrier_old is optional; pass it when the number has multiple assigned
-        carriers to disambiguate which one to replace.
+        carriers to disambiguate which one to replace (-18019801).
 
         Raises ProviderError with a human-readable message on all rejections,
-        including the -18019801..-18019808 range.
-        -18019807 (same carrier) is treated as idempotent success.
+        including the full -18019801..-18019809 range.
+
+        IMPORTANT: -18019807 is carrier-change LIMIT EXCEEDED, not "same carrier".
+        It is NEVER treated as idempotent success; it always raises ProviderError.
         Costs one shipment quota on acceptance.
         """
-        body: dict = {"number": number, "carrier": carrier_new}
+        body: dict = {"number": number, "carrier_new": carrier_new}
         if carrier_old is not None:
             body["carrier_old"] = carrier_old
         data = self._post("changecarrier", [body])
@@ -327,9 +380,6 @@ class Track17Provider:
         rej = self._find_rejected(data, number)
         if rej is not None:
             err_code = (rej.get("error") or {}).get("code")
-            if err_code == _CC_SAME_CARRIER:
-                # Idempotent: already using this carrier
-                return {"number": number, "carrier": carrier_new}
             msg = (
                 _CC_MESSAGES.get(int(err_code), f"changecarrier rejected (code {err_code})")
                 if isinstance(err_code, int)

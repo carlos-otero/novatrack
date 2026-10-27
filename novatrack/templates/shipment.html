@@ -1,6 +1,35 @@
 {% extends "base.html" %}
 {% block title %}{{ shipment.number | e }} — NovaTrack{% endblock %}
 {% block content %}
+
+{# ── Prominent paused-registration banner (top priority, above all other UI) ── #}
+{% if registration_paused and not shipment.registered and shipment.bucket == 'active' %}
+<div class="alert alert-warn alert-paused" role="alert">
+  <strong>⚠ Registration paused — action required.</strong>
+  {% if shipment.provider_error %}
+  {{ shipment.provider_error | e }}
+  {% else %}
+  Registration could not be completed. Additional information is needed.
+  {% endif %}
+  <a href="#update-params" class="alert-link">Update tracking parameters →</a>
+</div>
+{% endif %}
+
+{# ── Standard flash message ───────────────────────────────────────────────── #}
+{% if flash_msg %}
+<div class="alert alert-info" role="alert">{{ flash_msg | e }}</div>
+{% endif %}
+
+{# ── Provider error (non-paused cases: transient failures, carrier errors) ── #}
+{% if shipment.provider_error and not registration_paused %}
+<div class="alert alert-error" role="alert">
+  Provider error: {{ shipment.provider_error | e }}
+  {% if not shipment.registered and shipment.bucket == 'active' %}
+  — <a href="#update-params">Update tracking parameters</a> to retry.
+  {% endif %}
+</div>
+{% endif %}
+
 <div class="detail-header">
   <a href="{{ '/archive' if shipment.bucket == 'archive' else '/trash' if shipment.bucket == 'trash' else '/' }}" class="back-link">← {{ 'Archive' if shipment.bucket == 'archive' else 'Trash' if shipment.bucket == 'trash' else 'Active' }}</a>
   <div class="detail-meta">
@@ -14,23 +43,14 @@
   {% if shipment.store %}<p class="detail-store">{{ shipment.store | e }}</p>{% endif %}
 </div>
 
-{% if flash_msg %}
-<div class="alert alert-info" role="alert">{{ flash_msg | e }}</div>
-{% endif %}
-
-{% if shipment.provider_error %}
-<div class="alert alert-error" role="alert">
-  Provider error: {{ shipment.provider_error | e }}
-</div>
-{% endif %}
-
-{% if shipment.eta %}
+{# ── ETA: only shown when at least one bound is non-null/non-empty ────────── #}
+{% set _eta_from = shipment.eta.get('from') if shipment.eta else None %}
+{% set _eta_to   = shipment.eta.get('to')   if shipment.eta else None %}
+{% if _eta_from or _eta_to %}
 <div class="detail-section">
   <h3 class="section-title">Estimated Delivery</h3>
   <div class="eta-box">
-    {% if shipment.eta.get('from') or shipment.eta.get('to') %}
-    <span class="eta-range">{{ shipment.eta.get('from', '') | e }} – {{ shipment.eta.get('to', '') | e }}</span>
-    {% endif %}
+    <span class="eta-range">{{ (_eta_from or '—') | e }} – {{ (_eta_to or '—') | e }}</span>
   </div>
 </div>
 {% endif %}
@@ -44,6 +64,8 @@
       <input type="hidden" name="_csrf" value="{{ csrf_token }}">
       <button type="submit" class="btn btn-secondary">Refresh</button>
     </form>
+    {% elif registration_paused %}
+    <span class="field-hint">Registration paused — <a href="#update-params">update parameters</a> to retry.</span>
     {% else %}
     <span class="field-hint">Registration pending — Refresh available once registered.</span>
     {% endif %}
@@ -71,6 +93,19 @@
           data-confirm="Move this shipment to Trash?">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}">
       <button type="submit" class="btn btn-danger btn-sm">Move to Trash</button>
+    </form>
+    {% endif %}
+    {% if shipment.bucket == 'trash' %}
+    <form action="/shipments/{{ shipment.id | e }}/restore" method="post" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <button type="submit" class="btn btn-primary">
+        Restore{% if shipment.registered %} (uses 1 quota){% endif %}
+      </button>
+    </form>
+    <form action="/shipments/{{ shipment.id | e }}/purge" method="post" class="inline-form"
+          data-confirm="Permanently delete this shipment? This cannot be undone.">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <button type="submit" class="btn btn-danger">Purge</button>
     </form>
     {% endif %}
   </div>
@@ -101,7 +136,7 @@
 {% endif %}
 
 {% if not shipment.registered and shipment.bucket == 'active' %}
-<div class="detail-section">
+<div class="detail-section" id="update-params">
   <h3 class="section-title">Update Tracking Parameters</h3>
   <p class="field-hint">
     Some carriers require additional information to complete registration.

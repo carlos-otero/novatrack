@@ -7,7 +7,15 @@
 </div>
 
 {% if form_error %}
-<div class="alert alert-error" role="alert">{{ form_error | e }}</div>
+<div class="alert alert-error" role="alert">{{ form_error | e }}
+  {% if form_error_shipment_id %}
+  — <a href="/shipments/{{ form_error_shipment_id | e }}">View shipment
+  {%- if form_error_bucket == 'trash' %} in Trash
+  {%- elif form_error_bucket == 'archive' %} in Archive
+  {%- endif -%}
+  </a>
+  {% endif %}
+</div>
 {% endif %}
 
 <!-- Create Shipment Modal -->

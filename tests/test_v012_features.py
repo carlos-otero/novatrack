@@ -36,16 +36,17 @@ from novatrack.carriers import (
 )
 from novatrack.providers import ProviderError
 from novatrack.providers.track17 import (
-    _CC_INVALID_CARRIER,
+    _CC_DUPLICATE_INFO,
+    _CC_INVALID_NEW_CARRIER,
     _CC_LIMIT_EXCEEDED,
-    _CC_NOT_ACTIVE,
-    _CC_NOT_REGISTERED,
-    _CC_NULL_CARRIER,
-    _CC_PROCESSING,
-    _CC_SAME_CARRIER,
-    _INVALID_PARAM_FORMAT,
-    _MISSING_PARAM,
-    _PARAM_MISSING_PROMPT,
+    _CC_MISSING_NEW,
+    _CC_MULTIPLE_CARRIERS,
+    _CC_OLD_NOT_REGISTERED,
+    _CC_SAME_AS_CURRENT,
+    _CC_STOPPED,
+    _CC_WAIT_RESULTS,
+    _MISSING_COUNTRY_POSTAL,
+    _MISSING_POSTAL,
     Track17Provider,
 )
 
@@ -248,7 +249,7 @@ def test_register_missing_param_raises_retryable():
                     {
                         "number": "RR123",
                         "carrier": 0,
-                        "error": {"code": _MISSING_PARAM, "message": "Missing param"},
+                        "error": {"code": _MISSING_COUNTRY_POSTAL, "message": "Missing param"},
                     }
                 ],
             },
@@ -258,11 +259,11 @@ def test_register_missing_param_raises_retryable():
     with pytest.raises(ProviderError) as exc_info:
         prov.register("RR123", 14041)
     assert exc_info.value.retryable_without_quota is True
-    assert "additional information" in str(exc_info.value).lower() or "missing" in str(exc_info.value).lower()
+    assert "postal" in str(exc_info.value).lower() or "country" in str(exc_info.value).lower()
 
 
-def test_register_invalid_param_format_raises_retryable():
-    """Register rejection with -18010019 also raises retryable_without_quota=True."""
+def test_register_postal_missing_raises_retryable():
+    """Register rejection with -18010019 (postal missing) also raises retryable_without_quota=True."""
     resp = _mock_response(
         {
             "code": 0,
@@ -272,7 +273,7 @@ def test_register_invalid_param_format_raises_retryable():
                     {
                         "number": "RR123",
                         "carrier": 0,
-                        "error": {"code": _INVALID_PARAM_FORMAT, "message": "Bad format"},
+                        "error": {"code": _MISSING_POSTAL, "message": "Postal required"},
                     }
                 ],
             },
@@ -322,56 +323,80 @@ def test_changecarrier_accepted_returns_dict():
     assert result["number"] == "RR123"
 
 
-def test_changecarrier_same_carrier_idempotent():
-    prov = _provider(_cc_rejected_response("RR123", _CC_SAME_CARRIER))
-    result = prov.changecarrier("RR123", 3011)
-    assert result["carrier"] == 3011  # idempotent: no error raised
-
-
-def test_changecarrier_not_registered_raises():
-    prov = _provider(_cc_rejected_response("RR123", _CC_NOT_REGISTERED))
-    with pytest.raises(ProviderError) as exc_info:
-        prov.changecarrier("RR123", 3011)
-    assert "registered" in str(exc_info.value).lower()
-
-
-def test_changecarrier_processing_raises():
-    prov = _provider(_cc_rejected_response("RR123", _CC_PROCESSING))
-    with pytest.raises(ProviderError) as exc_info:
-        prov.changecarrier("RR123", 3011)
-    assert "processed" in str(exc_info.value).lower() or "processing" in str(exc_info.value).lower()
-
-
-def test_changecarrier_null_carrier_raises():
-    prov = _provider(_cc_rejected_response("RR123", _CC_NULL_CARRIER))
-    with pytest.raises(ProviderError) as exc_info:
-        prov.changecarrier("RR123", 3011)
-    assert "empty" in str(exc_info.value).lower() or "null" in str(exc_info.value).lower()
-
-
-def test_changecarrier_invalid_carrier_raises():
-    prov = _provider(_cc_rejected_response("RR123", _CC_INVALID_CARRIER))
-    with pytest.raises(ProviderError) as exc_info:
-        prov.changecarrier("RR123", 99999)
-    assert "does not exist" in str(exc_info.value).lower()
-
-
-def test_changecarrier_not_active_raises():
-    prov = _provider(_cc_rejected_response("RR123", _CC_NOT_ACTIVE))
-    with pytest.raises(ProviderError) as exc_info:
-        prov.changecarrier("RR123", 3011)
-    assert "active" in str(exc_info.value).lower()
-
-
 def test_changecarrier_limit_exceeded_raises():
+    """-18019807 is limit-exceeded — NEVER idempotent, always raises ProviderError."""
     prov = _provider(_cc_rejected_response("RR123", _CC_LIMIT_EXCEEDED))
     with pytest.raises(ProviderError) as exc_info:
         prov.changecarrier("RR123", 3011)
-    assert "5" in str(exc_info.value) or "limit" in str(exc_info.value).lower()
+    assert "limit" in str(exc_info.value).lower() or "5" in str(exc_info.value)
+
+
+def test_changecarrier_multiple_carriers_raises():
+    """-18019801: multiple carriers registered, specify carrier_old."""
+    prov = _provider(_cc_rejected_response("RR123", _CC_MULTIPLE_CARRIERS))
+    with pytest.raises(ProviderError) as exc_info:
+        prov.changecarrier("RR123", 3011)
+    assert "carrier" in str(exc_info.value).lower()
+
+
+def test_changecarrier_invalid_new_carrier_raises():
+    """-18019802: carrier_new value is invalid."""
+    prov = _provider(_cc_rejected_response("RR123", _CC_INVALID_NEW_CARRIER))
+    with pytest.raises(ProviderError) as exc_info:
+        prov.changecarrier("RR123", 99999)
+    assert "incorrect" in str(exc_info.value).lower() or "invalid" in str(exc_info.value).lower()
+
+
+def test_changecarrier_same_as_current_raises():
+    """-18019803: new carrier same as current — NOT idempotent, always raises."""
+    prov = _provider(_cc_rejected_response("RR123", _CC_SAME_AS_CURRENT))
+    with pytest.raises(ProviderError) as exc_info:
+        prov.changecarrier("RR123", 3011)
+    assert "same" in str(exc_info.value).lower()
+
+
+def test_changecarrier_missing_new_raises():
+    """-18019804: carrier_new not specified."""
+    prov = _provider(_cc_rejected_response("RR123", _CC_MISSING_NEW))
+    with pytest.raises(ProviderError) as exc_info:
+        prov.changecarrier("RR123", 3011)
+    assert "specified" in str(exc_info.value).lower() or "carrier_new" in str(exc_info.value).lower()
+
+
+def test_changecarrier_old_not_registered_raises():
+    """-18019805: carrier_old is wrong or tracking number not registered for it."""
+    prov = _provider(_cc_rejected_response("RR123", _CC_OLD_NOT_REGISTERED))
+    with pytest.raises(ProviderError) as exc_info:
+        prov.changecarrier("RR123", 3011, carrier_old=9999)
+    assert "registered" in str(exc_info.value).lower() or "incorrect" in str(exc_info.value).lower()
+
+
+def test_changecarrier_stopped_raises():
+    """-18019806: number is stopped, need to retrack first."""
+    prov = _provider(_cc_rejected_response("RR123", _CC_STOPPED))
+    with pytest.raises(ProviderError) as exc_info:
+        prov.changecarrier("RR123", 3011)
+    assert "stopped" in str(exc_info.value).lower() or "retrack" in str(exc_info.value).lower()
+
+
+def test_changecarrier_wait_results_raises():
+    """-18019808: tracking result not returned yet, wait before changing."""
+    prov = _provider(_cc_rejected_response("RR123", _CC_WAIT_RESULTS))
+    with pytest.raises(ProviderError) as exc_info:
+        prov.changecarrier("RR123", 3011)
+    assert "wait" in str(exc_info.value).lower() or "result" in str(exc_info.value).lower()
+
+
+def test_changecarrier_duplicate_info_raises():
+    """-18019809: duplicate registration already exists."""
+    prov = _provider(_cc_rejected_response("RR123", _CC_DUPLICATE_INFO))
+    with pytest.raises(ProviderError) as exc_info:
+        prov.changecarrier("RR123", 3011)
+    assert "duplicate" in str(exc_info.value).lower() or "exists" in str(exc_info.value).lower()
 
 
 def test_changecarrier_sends_carrier_old():
-    """When carrier_old is passed, it appears in the request body as carrier_old."""
+    """When carrier_old is passed, body has carrier_new and carrier_old."""
     calls: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -388,7 +413,8 @@ def test_changecarrier_sends_carrier_old():
 
     body = json.loads(calls[0].content)
     assert body[0]["carrier_old"] == 2000
-    assert body[0]["carrier"] == 3011
+    assert body[0]["carrier_new"] == 3011
+    assert "carrier" not in body[0] or body[0].get("carrier") is None  # old wrong key must not appear
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -490,7 +516,10 @@ def test_process_operations_retryable_resets_next_attempt(mem_session):
     from novatrack.tracking import create_shipment, process_operations
 
     prov = MagicMock()
-    prov.register.side_effect = ProviderError(_PARAM_MISSING_PROMPT, retryable_without_quota=True)
+    prov.register.side_effect = ProviderError(
+        "Registration requires the destination country (ISO alpha-2) and postal code for this carrier.",
+        retryable_without_quota=True,
+    )
 
     create_shipment(mem_session, prov, number="RETRYME1", carrier=14041)
     mem_session.flush()
@@ -747,7 +776,7 @@ def test_api_change_carrier_not_registered_returns_400(web_app):
     sid = _make_unregistered_shipment(sf, "APICARR01")
     r = client.post(
         f"/api/v1/shipments/{sid}/carrier",
-        json={"carrier": 3011},
+        json={"carrier_new": 3011},
         headers={"X-API-Key": raw},
     )
     assert r.status_code == 400
@@ -768,7 +797,7 @@ def test_api_change_carrier_registered_success(web_app):
     prov.changecarrier.return_value = {"number": "APICARR02", "carrier": 3011}
     r = client.post(
         f"/api/v1/shipments/{sid}/carrier",
-        json={"carrier": 3011},
+        json={"carrier_new": 3011},
         headers={"X-API-Key": raw},
     )
     assert r.status_code == 200

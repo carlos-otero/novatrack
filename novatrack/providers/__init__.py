@@ -8,14 +8,24 @@ class ProviderError(Exception):
 
     retryable_without_quota: True when the rejection did not consume a tracking
     quota slot (e.g. missing required parameter codes -18010018/-18010019/-18010020).
-    The worker uses this flag to reset next_attempt_at immediately instead of
-    applying the normal exponential backoff, so that re-filling the missing field
-    and waiting for the next worker run triggers a quick retry.
+    The worker uses this flag to pause the op indefinitely (next_attempt_at=year 9999)
+    so the user must supply missing fields via the UI to trigger a retry.
+
+    terminal: True when the rejection is a permanent blocker the user cannot
+    fix via the params form (e.g. -18010022 requires a shipping date that
+    NovaTrack cannot supply). The worker marks the op done=True — no retry ever.
     """
 
-    def __init__(self, message: str = "", *, retryable_without_quota: bool = False) -> None:
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        retryable_without_quota: bool = False,
+        terminal: bool = False,
+    ) -> None:
         super().__init__(message)
         self.retryable_without_quota = retryable_without_quota
+        self.terminal = terminal
 
 
 @runtime_checkable

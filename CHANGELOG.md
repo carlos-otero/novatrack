@@ -2,6 +2,45 @@
 
 All notable changes are documented here. Versions use SemVer.
 
+## 0.1.3 — 2026-10-27
+
+### Fixed
+- **changecarrier payload key corrected:** provider call now sends `carrier_new` (not `carrier`) and optional `carrier_old` per the official 17TRACK v2.2/v2.4 spec.  The v0.1.2 key was wrong; the API silently rejected all change-carrier requests.
+- **changecarrier error codes corrected** (all nine codes were mislabelled in v0.1.2):
+  - -18019801: Multiple carriers registered — specify `carrier_old`
+  - -18019802: `carrier_new` value is incorrect
+  - -18019803: New carrier cannot be the same as current
+  - -18019804: `carrier_new` or `final_carrier_new` must be specified
+  - -18019805: Tracking number not registered for `carrier_old` / `carrier_old` incorrect
+  - -18019806: Stopped number — retrack before changing carrier
+  - -18019807: Change limit reached (max 5) — previously mis-treated as idempotent "same carrier" success
+  - -18019808: Tracking result not yet returned — wait before changing
+  - -18019809: Duplicate registration info (new)
+- **-18019807 never treated as success:** the previous release incorrectly returned an accepted result when the provider rejected with -18019807 (limit exceeded).  This is now correctly raised as `ProviderError`.
+- **Register error codes 18/19/20/22 accurate messages:**
+  - -18010018: Country + postal code required (was generic prompt)
+  - -18010019: Postal code required
+  - -18010020: Phone number last 4 required
+  - -18010022: Shipping date required — NovaTrack cannot supply this; marks op `done=True` permanently (no retry loop)
+- **`ProviderError.terminal` flag:** new flag causes `process_operations` to mark the op `done=True` instead of retrying with backoff (used for -18010022).
+- **Trash re-add — unregistered:** adding a tracking number that's already in Trash AND was never registered automatically purges the old row (all related rows removed) and creates a fresh shipment with the new submitted data.  No user action needed.  (`force_purge_unregistered_trash` cancels any pending delete ops before deletion, since the provider was never called.)
+- **Trash re-add — registered:** adding a number that's in Trash and registered shows a contextual error with a direct link to restore or purge the existing shipment — no silent failure.
+- **Archive/active duplicate:** adding a number already tracked shows "already archived" / "already being tracked" with a direct link to the existing shipment.
+- **`POST /shipments/{id}/restore`:** restores a trashed shipment back to active.  Cancels pending delete ops.  If the shipment was registered, queues a re-register op (costs one quota, user is warned).
+- **`POST /shipments/{id}/purge`:** hard-deletes a trashed shipment immediately if no pending provider ops exist.  Returns actionable error if deletion is still pending (preserves provider lifecycle).
+- **Paused registration prominent notice:** shipment detail page now shows a yellow banner at the top (above the header) when registration is paused indefinitely.  The banner shows the actual provider error message and links directly to the `#update-params` form.  The "Registration pending" hint distinguishes paused vs. actively-pending.  New `is_registration_paused()` helper in `tracking.py`; `registration_paused` boolean passed to `shipment.html` context.
+- **Refresh unregistered flash message:** no longer says "check back shortly" when registration may be paused indefinitely.  Now directs the user to check the error below and update tracking parameters.
+- **Provider error alert position:** moved above the shipment header so it is visible on first paint without scrolling on both desktop and mobile.
+- **ETA section:** empty `{}` dict no longer renders the ETA section.  Null/missing `from`/`to` fields display an em dash (—) instead of blank.
+- **Restore/Purge buttons** in shipment detail for trash-bucket shipments.
+- **Params form anchor** (`#update-params`) linked from the provider error alert for one-click navigation.
+- **`restore_shipment` State 2 fix:** when a shipment's delete op already ran (provider deleted it while in trash, `registered=False`), restoring now correctly queues a re-register op (costs quota).  Previously, only `registered=True` cases triggered re-registration; a shipment whose delete had already completed would return to active permanently unregistered with no recovery path.  New test: `test_restore_shipment_after_delete_op_completed_requeues_register`.  Also adds `test_restore_shipment_paused_register_preserved` verifying the paused-register case does not duplicate ops.
+- **CSS `alert-warn` / `alert-info` missing:** the `style.css` file lacked definitions for `.alert-warn` (used by the paused-registration banner) and `.alert-info` (used for flash messages).  Both classes now render correctly (amber/yellow for warn, neutral surface for info).  Two new stylesheet contract tests guard against regression.
+
+### Upgrade notes
+- No database schema changes.  Migration remains at revision `0002`.
+- API clients calling `POST /api/v1/shipments/{id}/carrier` must now send `{"carrier_new": N}` instead of `{"carrier": N}`.
+
 ## 0.1.2 — 2026-10-26
 
 ### Added

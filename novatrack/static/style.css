@@ -364,6 +364,8 @@ code { font-family: var(--font-mono); font-size: .9em; }
 }
 .alert-error   { background: var(--danger-dim); border: 1px solid var(--danger); color: var(--danger); }
 .alert-success { background: var(--accent-dim); border: 1px solid var(--accent); color: var(--accent); }
+.alert-warn    { background: #422006; border: 1px solid var(--warning); color: var(--warning); }
+.alert-info    { background: var(--surface-2); border: 1px solid var(--border); color: var(--text); }
 
 /* ------------------------------------------------------------------ empty / error states */
 .empty-state, .error-state {
